@@ -70,48 +70,72 @@ WHAT IT DOES
 
 
 --------------------------------------------------------
-  PROJECTS
+  GROUPS  (the left side of the window)
 --------------------------------------------------------
 
-  At the top of the window there is a "Project" dropdown.
+  Down the left is your list of GROUPS.
 
-  A project is one job: its own message, its own list of
-  people, and its own memory of who has already been sent
-  to.
+  A group is just a list of people, with its own message.
+  For example:
 
-  So you can keep:
+      Daily rates      (412)
+      VIP customers    (30)
+      New enquiries    (8)
 
-      Daily rates        -> 400 customers
-      VIP customers      -> 30 people
-      New enquiries      -> whoever came in this week
+  TO MAKE A GROUP
+      Click  + New  at the top left, type a name.
 
-  Click New to make one, Rename to rename it, Delete to
-  remove it. Switch between them with the dropdown and
-  everything for that project comes back exactly as you
-  left it.
+  TO ADD PEOPLE
+      Type in the box at the bottom of the people list:
 
-  Sending in one project does NOT affect any other
-  project.
+          +353871234567, John
+          @ali_khan, Ali
+
+      Press Add person, or just hit Enter.
+      The name after the comma is optional.
+
+      You can also paste several at once separated by
+      semicolons, or use:
+          "From a Telegram group..."  - adds everyone from
+                                        one of your Telegram
+                                        groups
+          "From a file..."            - adds everyone from a
+                                        text or CSV file
+
+      Anyone already in the group is skipped, so you can
+      never get duplicates.
+
+  TO REMOVE PEOPLE
+      Click their name in the list, then click
+      "Remove selected".
+      Hold Ctrl to pick several, or Shift for a whole run
+      of them.
+
+  TO RENAME OR DELETE A GROUP
+      Rename / Delete buttons under the group list.
+
+  Each group remembers its own people, its own message,
+  its own attached photo, and its own record of who has
+  already been sent to. They never mix.
 
 
 --------------------------------------------------------
-  ADDING EVERYONE FROM A GROUP
+  SENDING A MESSAGE
 --------------------------------------------------------
 
-  Click "Add everyone from a group..." under the list.
+  1. Click the group on the left.
+  2. Type your message in the Message box.
+  3. If you want to send a photo or video, click
+     "Attach photo / video / file".
+  4. Click "Check first (sends nothing)" to see exactly
+     what will go out and how long it will take.
+  5. Click  SEND.
 
-  It shows the groups your account is in. Pick one and
-  everybody in it gets added to your list. Anyone already
-  on the list is skipped, so you cannot get duplicates.
+  Every person in that group gets it as a separate
+  private message from you. They never see each other.
 
-  Careful: people in a group who are not already your
-  contacts count as NEW people. Only a small number of
-  those are sent per day, on purpose — see below. Members
-  of a group who have never spoken to you are exactly the
-  people Telegram bans accounts for messaging.
-
-  Some groups hide their member list unless you are an
-  admin. Nothing we can do about that.
+  When they reply, it arrives in your normal Telegram, in
+  your private chat with them. Nobody else sees it.
 
 
 --------------------------------------------------------

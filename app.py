@@ -129,7 +129,12 @@ class App:
         self.setup_msg = tk.Label(c, text="", bg=CARD, fg=MUTED, justify="left",
                                   wraplength=900, font=F(11))
         self.setup_msg.pack(anchor="w", padx=12, pady=(4, 8))
-        tk.Label(c, text=(
+        # These two blocks are hidden entirely when the app ships with the
+        # api keys already filled in — then all the user does is type a phone
+        # number, and never sees my.telegram.org at all.
+        self.api_help = tk.Frame(c, bg=CARD)
+        self.api_help.pack(anchor="w", fill="x")
+        tk.Label(self.api_help, text=(
             "Step 1  Click the button below — it opens my.telegram.org.\n"
             "Step 2  Log in with your phone number (the code arrives inside "
             "the Telegram app, not by SMS).\n"
@@ -139,22 +144,25 @@ class App:
             "into the boxes below.\n\nYou only do this once."),
             bg=CARD, fg="#1b1f24", justify="left", wraplength=900,
             font=F(11)).pack(anchor="w", padx=12)
-        tk.Button(c, text="Open my.telegram.org", bg=ACCENT, fg="white",
-                  font=F(11, True), relief="flat", cursor="hand2",
+        tk.Button(self.api_help, text="Open my.telegram.org", bg=ACCENT,
+                  fg="white", font=F(11, True), relief="flat", cursor="hand2",
                   command=lambda: webbrowser.open("https://my.telegram.org")
                   ).pack(anchor="w", padx=12, pady=10)
 
         form = tk.Frame(c, bg=CARD)
         form.pack(anchor="w", padx=12, pady=(0, 12))
+        self.api_rows = form
         self.e_api_id = self._field(form, 0, "api_id", 32,
                                     str(self.cfg.get("api_id") or ""))
         h = self.cfg.get("api_hash", "")
         self.e_api_hash = self._field(form, 1, "api_hash", 48,
                                       "" if "PUT_YOUR" in str(h) else h)
-        self.e_phone = self._field(form, 2, "Your phone", 32,
+        self.e_phone = self._field(form, 2, "Your phone number", 32,
                                    self.cfg.get("last_phone", ""))
-        tk.Label(form, text="with country code, e.g. +353871234567", bg=CARD,
-                 fg=MUTED, font=F(9)).grid(row=3, column=1, sticky="w")
+        self.lbl_phone_hint = tk.Label(
+            form, text="with country code, e.g. +353871234567", bg=CARD,
+            fg=MUTED, font=F(9))
+        self.lbl_phone_hint.grid(row=3, column=1, sticky="w")
 
         self.b_connect = tk.Button(c, text="Connect", bg=GOOD, fg="white",
                                    font=F(12, True), relief="flat",
@@ -172,15 +180,32 @@ class App:
         e.insert(0, value)
         return e
 
+    def preconfigured(self):
+        """True when the app already ships with working api keys."""
+        return S.config_ready(self.cfg)
+
     def show_setup(self, msg=""):
         if hasattr(self, "main"):
             self.main.pack_forget()
         self.setup.pack(fill="both", expand=True)
+        if self.preconfigured():
+            # hide the whole my.telegram.org rigmarole — just ask for a phone
+            self.api_help.pack_forget()
+            for w in (self.e_api_id, self.e_api_hash):
+                w.grid_remove()
+            for lbl in self.api_rows.grid_slaves(row=0) + \
+                    self.api_rows.grid_slaves(row=1):
+                lbl.grid_remove()
+            if not msg:
+                msg = ("Type your phone number and click Connect.\n\n"
+                       "Telegram will send you a login code inside the "
+                       "Telegram app (not by SMS).")
         self.setup_msg.config(text=msg)
 
     def _on_connect(self):
-        api_id = self.e_api_id.get().strip()
-        api_hash = self.e_api_hash.get().strip()
+        pre = self.preconfigured()
+        api_id = str(self.cfg["api_id"]) if pre else self.e_api_id.get().strip()
+        api_hash = self.cfg["api_hash"] if pre else self.e_api_hash.get().strip()
         phone = self.e_phone.get().strip()
         if not api_id.isdigit() or not api_hash:
             messagebox.showwarning("Almost there", "Paste both api_id (numbers "
@@ -222,8 +247,12 @@ class App:
             self.show_main()
         elif st == "need_phone":
             self.b_connect.config(state="normal")
-            self.setup_status.config(text="Enter your phone and click Connect.",
-                                     fg=MUTED)
+            self.setup_msg.config(
+                text="Type your phone number and click Connect.\n\nTelegram "
+                     "sends you a login code inside the Telegram app — not by "
+                     "SMS." if self.preconfigured() else
+                     "Let's connect your Telegram account. One time only.")
+            self.setup_status.config(text="", fg=MUTED)
         elif st == "need_code":
             code = simpledialog.askstring(
                 "Telegram sent you a code",

@@ -27,11 +27,13 @@ this and says so.
 | `app.py` | The tkinter window — the only thing the client touches |
 | `sender.py` | Engine: connection, planning, pacing, safety. No UI, no prints |
 | `broadcast.py` | Command-line front end for the same engine (servers, testing) |
-| `config.json` | Credentials + all pacing/safety numbers |
-| `message.txt` / `recipients.txt` | Autosaved from the window's two text boxes |
-| `state.json` | Who already received it. Archived, not wiped, by "New campaign" |
-| `sent_log.csv` | Audit trail: timestamp, target, status, reason |
-| `main_account.session` | Telethon session = a live login. **Never share or commit.** |
+| `config.default.json` | Tracked template: pacing/safety defaults, no secrets |
+| `config.json` | **Git-ignored.** His real api keys + only the settings he changed |
+| `projects.json` | **Git-ignored.** Each project's message + recipient list |
+| `state.json` | **Git-ignored.** Per-project sent-record + per-day known/new counters |
+| `sent_log.csv` | **Git-ignored.** Audit trail: time, project, target, status |
+| `main_account.session` | **Git-ignored.** A live login. Never share or commit. |
+| `message.txt` / `recipients.txt` | Legacy seeds, migrated into a project on first run |
 
 `sender.py` reports everything through an `emit(kind, **data)` callback, so the GUI and
 CLI share identical logic. Event kinds: `log`, `progress`, `waiting`, `blocked`,
@@ -49,23 +51,25 @@ velocity are what get flagged, not volume alone.
 | Typing simulation | Read-pause, then a real typing indicator sized to the text |
 | Night silence | Sends only 09:00–21:30 local; sleeps otherwise |
 | Text variation | Multiple variants + `{a\|b\|c}` spintax, resolved per recipient |
-| Warm-up ramp | 20 → 25 → 35 → 45 → 60 → 75 → 90 → 100/day over the first week |
-| Contact priority | Saved contacts + open chats first; strangers last, ≤12/day |
+| Warm-up ramp | 25 → 40 → 60 → 90 → 130 → 180 → 240 total/day, then no ceiling |
+| Known contacts | **No cap.** Saved contacts + open chats; the clock is the only limit |
+| Strangers | **Hard cap 15/day**, sent last. `PeerFlood` = "too many non-mutual users" |
 | FloodWait | Waits the stated time **+20% buffer**, never bypasses or switches session |
 | PeerFlood | Hard stop, whole run aborted — this restriction lasts days |
 | Pre-flight | @SpamBot queried before every run; refuses to start if limited |
 | Error brake | Stops after 5 consecutive failures |
 | Idempotent | State saved after every message; Stop/crash never double-sends |
 
-**Do not raise `daily_cap` or lower the delays.** They are the protection, not a
-throttle to tune.
+**Do not raise `daily_cap_new` or lower the delays.** They are the protection, not a
+throttle to tune. `unlimited_known` is safe to leave on — those people are not what
+Telegram's spam system targets.
 
 ## Command line
 
 ```bash
-./venv/bin/python broadcast.py --check   # plan + sample messages, sends nothing
-./venv/bin/python broadcast.py           # send
-./venv/bin/python broadcast.py --yes     # no confirmation prompt
+./venv/bin/python broadcast.py --list                      # show projects
+./venv/bin/python broadcast.py --project "Daily" --check    # plan only
+./venv/bin/python broadcast.py --project "Daily" --yes       # send
 ```
 
 Login must be done once through the window first (`app.py`) — the CLI won't prompt for
@@ -81,10 +85,17 @@ Verified with a mock Telegram client, no live account needed:
 - ✅ `UserPrivacyRestrictedError` → skips that person, continues, counts correctly
 - ✅ STOP pressed mid-run → halts promptly, progress preserved
 - ✅ Resume → already-sent people excluded, no double-sends
-- ✅ Warm-up ramp returns 20/25/45/90/100 on days 0/1/3/6/10
+- ✅ Warm-up ramp 25/40/60/90/130/180/240 then uncapped, days 0–30
+- ✅ 200 known contacts all queued; 15 of 50 strangers queued; 35 held for later
+- ✅ Stranger cap exhausted → 0 new queued, known still unlimited
+- ✅ known/new day counters tracked independently
+- ✅ Projects: create, persist, rename, delete; per-project sent-record isolation
+- ✅ Unicode/emoji (`Séamus O'Brien — €50 ✅ 中文 🎉`) through files and CSV — the
+  cp1252 crash that would have hit on Windows
 - ✅ Recipient parsing: usernames, `+353 87 123 4567` spacing, IDs, comments, dupes
-- ✅ GUI builds, both screens render, event pump drives progress/status/log correctly
-- ✅ Config round-trip preserves comments; CLI refuses to run unconfigured
+- ✅ GUI: both screens, project switching restores per-project content, settings
+  dialog, group picker, break/gap/night countdowns, button state on finish
+- ✅ Config layering: keys survive a pull, his overrides win, new defaults reach him
 
 Not exercised without real credentials: the live login handshake and real
 `send_message` calls. Before the full list, run `--check`, then send to 2–3 of your own

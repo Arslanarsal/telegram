@@ -186,13 +186,7 @@ def config_ready(cfg):
 # ---------------------------------------------------------------- projects
 # A "project" is one saved job: a name, its message, and its list of people.
 
-DEFAULT_MESSAGE = """{Hi|Hello|Hey} {name},
-
-{Just a quick update|Quick update for you} — today's rates are out.
-{Let me know if you want the details.|Message me if you need anything.}
-
-{Thanks|Thank you},
-"""
+DEFAULT_MESSAGE = ""
 
 
 def load_projects():
@@ -200,8 +194,7 @@ def load_projects():
     if data and isinstance(data, dict) and data.get("projects"):
         return data
     # first run: migrate the old single message.txt / recipients.txt if present
-    msg = _read(MESSAGE_PATH, "") or DEFAULT_MESSAGE
-    rcpt = _read(RECIPIENTS_PATH, "")
+    msg, rcpt = DEFAULT_MESSAGE, ""
     data = {"projects": {"My first list": {"message": msg, "recipients": rcpt}},
             "current": "My first list"}
     _write_json(PROJECTS_PATH, data)
@@ -217,12 +210,15 @@ def project_names(data):
 
 
 def get_project(data, name):
-    return data["projects"].get(name, {"message": DEFAULT_MESSAGE,
-                                       "recipients": ""})
+    p = data["projects"].get(name, {"message": DEFAULT_MESSAGE,
+                                    "recipients": ""})
+    p.setdefault("attachment", "")
+    return p
 
 
-def set_project(data, name, message, recipients):
-    data["projects"][name] = {"message": message, "recipients": recipients}
+def set_project(data, name, message, recipients, attachment=""):
+    data["projects"][name] = {"message": message, "recipients": recipients,
+                              "attachment": attachment or ""}
     data["current"] = name
     save_projects(data)
 
@@ -294,6 +290,22 @@ def render(variants, name):
 
 def norm_phone(s):
     return re.sub(r"[^\d]", "", s)
+
+
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+
+# Telegram refuses a caption longer than this; the text is sent separately then.
+CAPTION_LIMIT = 1024
+
+
+def attachment_kind(path):
+    ext = os.path.splitext(str(path))[1].lower()
+    if ext in IMAGE_EXT:
+        return "photo"
+    if ext in VIDEO_EXT:
+        return "video"
+    return "document"
 
 
 def is_known(target, known):
@@ -592,22 +604,43 @@ class Sender:
             await asyncio.sleep(min(1.0, left))
         return False
 
-    async def _human_typing(self, entity, text, stop):
+    async def _human_typing(self, entity, text, stop, action="typing"):
         await self._sleep(random.uniform(self.cfg["read_pause_min"],
                                         self.cfg["read_pause_max"]), stop)
         dur = len(text) * self.cfg["typing_per_char"] * random.uniform(0.8, 1.25)
         dur = max(self.cfg["typing_min"], min(self.cfg["typing_max"], dur))
         try:
-            async with self.client.action(entity, "typing"):
+            async with self.client.action(entity, action):
                 await self._sleep(dur, stop)
         except Exception:
             await self._sleep(dur, stop)
 
+    async def _deliver(self, entity, text, attachment):
+        """One message, with a photo/video/file attached if there is one."""
+        if not attachment:
+            await self.client.send_message(entity, text)
+            return
+        if len(text) <= CAPTION_LIMIT:
+            await self.client.send_file(entity, attachment, caption=text)
+        else:
+            # too long to be a caption — send the file, then the text
+            await self.client.send_file(entity, attachment)
+            await self.client.send_message(entity, text)
+
     # -- the run -------------------------------------------------------
 
-    async def run(self, plan, variants, state, project, stop):
+    async def run(self, plan, variants, state, project, stop, attachment=""):
         queue = plan["queue"]
         ps = project_state(state, project)
+        if attachment and not os.path.exists(attachment):
+            self.log(f"The attached file is missing: {attachment}\nSending the "
+                     f"text only.", "warn")
+            attachment = ""
+        if attachment:
+            self.log(f"Attaching {attachment_kind(attachment)}: "
+                     f"{os.path.basename(attachment)}", "info")
+        upload_action = ("typing" if not attachment
+                         else attachment_kind(attachment))
         if not state.get("first_use"):
             state["first_use"] = datetime.now().isoformat(timespec="seconds")
             save_state(state)
@@ -659,11 +692,11 @@ class Sender:
             text = render(variants, display)
 
             try:
-                await self._human_typing(entity, text, stop)
+                await self._human_typing(entity, text, stop, upload_action)
                 if stop.is_set():
                     reason = "stopped by you"
                     break
-                await self.client.send_message(entity, text)
+                await self._deliver(entity, text, attachment)
                 ps["sent"][target] = datetime.now().isoformat(timespec="seconds")
                 record_send(state, cls)
                 log_row(project, target, name, "sent", cls)
@@ -689,7 +722,7 @@ class Sender:
                     reason = "stopped by you"
                     break
                 try:
-                    await self.client.send_message(entity, text)
+                    await self._deliver(entity, text, attachment)
                     ps["sent"][target] = datetime.now().isoformat(
                         timespec="seconds")
                     record_send(state, cls)

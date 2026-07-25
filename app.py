@@ -306,14 +306,29 @@ class App:
         # ---- message
         left = self._card(top, "1.  Your message  (type it once)")
         left.pack(side="left", fill="both", expand=True)
-        tk.Label(left, text="{name} = their first name.   {Hi|Hello|Hey} = picks "
-                            "one at random.   --- on its own line = another "
-                            "version.", bg=CARD, fg=MUTED, wraplength=480,
-                 justify="left", font=F(9)).pack(anchor="w", padx=12, pady=(2, 6))
-        self.t_msg = scrolledtext.ScrolledText(left, height=15, wrap="word",
+        tk.Label(left, text="Just type your message. Optional: {name} becomes "
+                            "their first name.", bg=CARD, fg=MUTED,
+                 wraplength=480, justify="left",
+                 font=F(9)).pack(anchor="w", padx=12, pady=(2, 6))
+        self.t_msg = scrolledtext.ScrolledText(left, height=13, wrap="word",
                                                font=F(11), relief="solid",
                                                borderwidth=1, undo=True)
         self.t_msg.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+
+        # ---- attachment
+        ab = tk.Frame(left, bg=CARD)
+        ab.pack(anchor="w", fill="x", padx=12, pady=(0, 4))
+        tk.Button(ab, text="Attach photo / video / file…", relief="flat",
+                  cursor="hand2", font=F(10),
+                  command=self._on_attach).pack(side="left")
+        self.b_unattach = tk.Button(ab, text="Remove", relief="flat",
+                                    cursor="hand2", font=F(10), fg=BAD,
+                                    command=self._on_unattach)
+        self.b_unattach.pack(side="left", padx=6)
+        self.lbl_attach = tk.Label(ab, text="", bg=CARD, fg=MUTED, font=F(9),
+                                   wraplength=280, justify="left")
+        self.lbl_attach.pack(side="left", padx=6)
+
         self.lbl_variants = tk.Label(left, text="", bg=CARD, fg=MUTED, font=F(9))
         self.lbl_variants.pack(anchor="w", padx=12, pady=(0, 10))
 
@@ -417,12 +432,60 @@ class App:
         self.t_msg.insert("1.0", p.get("message", ""))
         self.t_rcpt.delete("1.0", "end")
         self.t_rcpt.insert("1.0", p.get("recipients", ""))
+        self.attachment = p.get("attachment", "") or ""
+        self._refresh_attach()
         self._refresh_counts()
 
     def _save_current_project(self):
         S.set_project(self.projects, self.current,
                       self.t_msg.get("1.0", "end").rstrip() + "\n",
-                      self.t_rcpt.get("1.0", "end").rstrip() + "\n")
+                      self.t_rcpt.get("1.0", "end").rstrip() + "\n",
+                      getattr(self, "attachment", ""))
+
+    # ---------------------------------------------------------------- attach
+
+    def _refresh_attach(self):
+        a = getattr(self, "attachment", "")
+        if a:
+            missing = not os.path.exists(a)
+            self.lbl_attach.config(
+                text=("FILE IS MISSING: " if missing else
+                      f"{S.attachment_kind(a)}: ") + os.path.basename(a),
+                fg=BAD if missing else GOOD)
+            self.b_unattach.pack(side="left", padx=6)
+        else:
+            self.lbl_attach.config(text="no file attached (text only)", fg=MUTED)
+            self.b_unattach.pack_forget()
+
+    def _on_attach(self):
+        path = filedialog.askopenfilename(
+            title="Choose a photo, video or file to send with the message",
+            filetypes=[("Photos and videos",
+                        "*.jpg *.jpeg *.png *.gif *.webp *.mp4 *.mov *.avi "
+                        "*.mkv *.webm"),
+                       ("All files", "*.*")])
+        if not path:
+            return
+        size_mb = os.path.getsize(path) / (1024 * 1024)
+        if size_mb > 2000:
+            messagebox.showwarning("File too big",
+                                   "Telegram's limit is 2 GB per file.")
+            return
+        self.attachment = path
+        self._refresh_attach()
+        self._save_current_project()
+        self.log(f"Attached {S.attachment_kind(path)}: "
+                 f"{os.path.basename(path)} ({size_mb:.1f} MB). Everyone on "
+                 f"this list will get it with the message.", "good")
+        if size_mb > 20:
+            self.log(f"That is a big file ({size_mb:.0f} MB) — each send will "
+                     f"take longer to upload.", "warn")
+
+    def _on_unattach(self):
+        self.attachment = ""
+        self._refresh_attach()
+        self._save_current_project()
+        self.log("File removed — the message will be sent as text only.", "info")
 
     def _on_switch_project(self, _=None):
         if self.running:
@@ -723,10 +786,11 @@ class App:
         if not v:
             self.lbl_variants.config(text="No message written yet.", fg=BAD)
         elif len(v) == 1:
-            self.lbl_variants.config(text="1 version — add another with --- "
-                                          "for better safety.", fg=WARN)
+            self.lbl_variants.config(text="Ready — the same message goes to "
+                                          "everyone.", fg=GOOD)
         else:
-            self.lbl_variants.config(text=f"{len(v)} versions — good.", fg=GOOD)
+            self.lbl_variants.config(text=f"{len(v)} versions — it will mix "
+                                          f"between them.", fg=GOOD)
 
     def _inputs(self):
         v = S.parse_message_variants(self.t_msg.get("1.0", "end"))
@@ -789,6 +853,13 @@ class App:
             self.log(f"{plan['left_for_later']} people are left for the next "
                      f"days ({'; '.join(why) or 'daily limits'}). Nothing is "
                      f"lost — open this tomorrow and it carries on.", "warn")
+        att = getattr(self, "attachment", "")
+        if att:
+            self.log(f"Attached {S.attachment_kind(att)}: "
+                     f"{os.path.basename(att)}"
+                     + ("  — WARNING: this file is missing!"
+                        if not os.path.exists(att) else ""),
+                     "bad" if not os.path.exists(att) else "info")
         if q:
             t, n, _ = plan["queue"][0]
             self.log("This is what one person will receive:", "info")
@@ -820,18 +891,22 @@ class App:
                     "message the same people again, use \"Send again to "
                     "everyone\".")
                 return
-            if len(variants) == 1 and not messagebox.askyesno(
-                    "Only one version of the message",
-                    "Sending word-for-word identical text to many people is the "
-                    "main thing Telegram treats as spam.\n\nAdd a second "
-                    "version (put --- on its own line).\n\nSend anyway?"):
+            att = getattr(self, "attachment", "")
+            if att and not os.path.exists(att):
                 self._reset_buttons()
+                messagebox.showerror(
+                    "The attached file is gone",
+                    f"This project has a file attached, but it is no longer "
+                    f"here:\n\n{att}\n\nAttach it again, or click Remove to "
+                    f"send text only.")
                 return
+            extra = (f"\nWith {S.attachment_kind(att)}: "
+                     f"{os.path.basename(att)}" if att else "")
             if not messagebox.askyesno(
                     "Ready to send",
                     f"Project: {self.current}\n\nSend to {q} people?\n"
                     f"({plan['known_queued']} you already know, "
-                    f"{plan['new_queued']} new)\n\n"
+                    f"{plan['new_queued']} new){extra}\n\n"
                     f"About {plan['hours']:.1f} hours — it sends slowly, like a "
                     f"person typing.\n\nLeave this window open. You can press "
                     f"STOP any time and nobody gets it twice."):
@@ -863,7 +938,7 @@ class App:
                     return None
             return await self.backend.sender.run(
                 self.plan, variants, self.state, self.current,
-                self.backend.stop_flag)
+                self.backend.stop_flag, getattr(self, "attachment", ""))
 
         self.backend.submit(go(), on_error=self._run_error)
 

@@ -1,0 +1,26 @@
+# Your message. Write it ONCE here, save the file, run the script.
+#
+# Lines starting with # are ignored.
+# Separate alternative versions with a line containing only: ---
+#   The script picks one at random per person. More versions = safer.
+# Inline choices with {a|b|c}  -> picks one at random.
+# Use {name} for the person's first name.
+#
+# ---------------------------------------------------------------
+
+{Hi|Hello|Hey} {name},
+
+{Just a quick update|Quick update for you|Wanted to let you know} — today's rates are out.
+{Let me know if you want the details.|Message me if you need anything.|Tell me if you want more info.}
+
+{Thanks|Thank you},
+Ahmed
+
+---
+
+{Hi|Hello} {name},
+
+Today's rates are ready. {Reply here if you're interested.|Just reply if you want the details.}
+
+{Thanks|Regards},
+Ahmed

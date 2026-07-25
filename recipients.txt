@@ -1,0 +1,11 @@
+# One person per line. Lines starting with # are ignored.
+#
+# Format:  target            or    target, Name
+#   target can be:  @username   |   +923001234567   |   numeric user id
+#   Name is optional — used for {name} in message.txt. If missing, the script
+#   uses the first name from their Telegram profile.
+#
+# Examples (delete these and put the real list):
+# @ali_khan, Ali
+# +923001234567, Bilal
+# 123456789

@@ -1,0 +1,332 @@
+========================================================
+  TELEGRAM SENDER  —  how to use it
+========================================================
+
+WHAT IT DOES
+
+  You type your message ONCE.
+  You press one button.
+  Every person on your list gets it as a normal private
+  message from you.
+
+  Nobody sees anybody else. There is no group. There is
+  no channel. To them it looks exactly like you wrote to
+  them personally, because you did.
+
+  When somebody replies, their reply arrives in your
+  normal Telegram, in your normal private chat with them.
+  Only you and they can see it. Nothing to set up for
+  that — it just works.
+
+  No monthly fee. No yearly fee. Nothing to subscribe to.
+
+
+--------------------------------------------------------
+  STARTING IT
+--------------------------------------------------------
+
+  On Windows:   double-click   START WINDOWS.bat
+  On Mac:       double-click   START MAC or LINUX.command
+
+  The first time, it spends about a minute setting itself
+  up. After that it opens in a few seconds.
+
+  If Windows shows a blue "Windows protected your PC" box:
+  click "More info", then "Run anyway". That appears
+  because the file is new, not because anything is wrong.
+
+
+--------------------------------------------------------
+  FIRST TIME ONLY — connecting your Telegram
+--------------------------------------------------------
+
+  You do this once, ever. The window walks you through it.
+
+  1. Click the blue "Open my.telegram.org" button.
+  2. Log in there with your phone number. Telegram sends
+     you a code in the app — type it in the website.
+  3. Click "API development tools".
+     (NOT "Delete account", which is just below it.)
+  4. Fill it in exactly like this:
+         App title:   mysender
+         Short name:  mysender
+         URL:         leave empty
+         Platform:    Desktop
+     Letters and numbers only, no spaces. Then Create.
+     If it says "ERROR", reload the page - it often
+     worked anyway and the values are there.
+  5. The page then shows two things:
+         api_id      (a number)
+         api_hash    (a long code)
+     Copy each one into the matching box in the window.
+  6. Type your phone number with the country code,
+     e.g.  +353871234567
+  7. Click Connect.
+  8. Telegram sends you a login code. Type it in the box
+     that appears. If you use a Telegram password, it
+     will ask for that too.
+
+  Done. It remembers you from now on.
+
+
+--------------------------------------------------------
+  PROJECTS
+--------------------------------------------------------
+
+  At the top of the window there is a "Project" dropdown.
+
+  A project is one job: its own message, its own list of
+  people, and its own memory of who has already been sent
+  to.
+
+  So you can keep:
+
+      Daily rates        -> 400 customers
+      VIP customers      -> 30 people
+      New enquiries      -> whoever came in this week
+
+  Click New to make one, Rename to rename it, Delete to
+  remove it. Switch between them with the dropdown and
+  everything for that project comes back exactly as you
+  left it.
+
+  Sending in one project does NOT affect any other
+  project.
+
+
+--------------------------------------------------------
+  ADDING EVERYONE FROM A GROUP
+--------------------------------------------------------
+
+  Click "Add everyone from a group..." under the list.
+
+  It shows the groups your account is in. Pick one and
+  everybody in it gets added to your list. Anyone already
+  on the list is skipped, so you cannot get duplicates.
+
+  Careful: people in a group who are not already your
+  contacts count as NEW people. Only a small number of
+  those are sent per day, on purpose — see below. Members
+  of a group who have never spoken to you are exactly the
+  people Telegram bans accounts for messaging.
+
+  Some groups hide their member list unless you are an
+  admin. Nothing we can do about that.
+
+
+--------------------------------------------------------
+  SENDING — the everyday routine
+--------------------------------------------------------
+
+  BOX 1 — YOUR MESSAGE
+
+    Type your message on the left.
+
+    Handy tricks (all optional):
+
+      {name}
+          becomes their first name.
+          "Hi {name}," arrives as "Hi John,"
+
+      {Hi|Hello|Hey}
+          picks one at random for each person, so the
+          messages are not all word-for-word identical.
+          This is the single best thing you can do to
+          keep your account safe.
+
+      ---
+          put three dashes on their own line to write a
+          whole second version of the message. It will
+          mix between them.
+
+    Aim for two versions. The little label under the box
+    turns green when you have enough.
+
+  BOX 2 — WHO GETS IT
+
+    One person per line, either:
+
+        @their_username
+        +353871234567
+
+    You can add their name after a comma so {name} works:
+
+        @john_doe, John
+        +353871234567, Mary
+
+    Or click "Load from a file…" and pick a file you
+    already have.
+
+  THEN
+
+    Click "Check first (sends nothing)".
+      It tells you how many will go out, how long it will
+      take, and shows you exactly what one person will
+      receive. Nothing is sent. Always do this.
+
+    Click "START SENDING".
+      It asks you to confirm, then starts.
+
+    Leave the window open while it works.
+    You can press STOP any time.
+
+
+--------------------------------------------------------
+  WHY IS IT SLOW?  (please read this bit)
+--------------------------------------------------------
+
+  It sends about one message every one to two minutes,
+  and takes a rest every dozen or so. 100 messages takes
+  around 4 hours.
+
+  This is on purpose. It is the whole reason your account
+  stays alive.
+
+  Telegram watches for accounts firing out hundreds of
+  identical messages in seconds, and it restricts them.
+  By going at the speed of a person actually typing —
+  with pauses, breaks, and slightly different wording —
+  it looks like what it is: you, messaging your customers.
+
+  Do not ask for it to be made faster. Faster is the one
+  thing that gets the account banned.
+
+  It also will not send at night. It waits until 9am.
+
+
+--------------------------------------------------------
+  HOW MANY CAN IT SEND?
+--------------------------------------------------------
+
+  There are TWO different groups, and they are treated
+  completely differently. This matters.
+
+  1. PEOPLE YOU ALREADY KNOW
+     Your saved contacts, and anyone you already have a
+     chat with.
+
+     NO LIMIT. All of them. However many you select.
+
+     The only thing that limits it is the clock, because
+     each message is paced like a person typing. In a
+     normal day it gets through a few hundred. If your
+     list is bigger than that, it simply carries on the
+     next day by itself.
+
+  2. PEOPLE YOU HAVE NEVER MESSAGED
+     Strangers. Group members who aren't your contacts.
+
+     LIMITED to 15 a day by default.
+
+     This is not us being cautious for no reason. This is
+     the exact thing Telegram bans accounts for — their
+     error is literally called "too many non-mutual
+     users". Accounts that push this get restricted
+     within days.
+
+     You can change the number under "Speed & limits",
+     but above about 40 a day you are gambling with the
+     account.
+
+  So: if you are messaging your own customers, you can
+  send to all of them. If you are messaging strangers,
+  it goes out in small daily batches whether you like it
+  or not.
+
+
+--------------------------------------------------------
+  THE FIRST WEEK IS SMALLER ON PURPOSE
+--------------------------------------------------------
+
+  Day 1 allows 25 messages in total. Then 40, 60, 90,
+  130, 180, 240 — and from day 8 there is no ceiling at
+  all for people you know.
+
+  Telegram trusts accounts that grow steadily and
+  punishes sudden bursts. Anyone left over is not lost —
+  open the window the next day and it carries straight on
+  from where it stopped.
+
+
+--------------------------------------------------------
+  THINGS IT DOES FOR YOU AUTOMATICALLY
+--------------------------------------------------------
+
+  * Never sends to the same person twice in a campaign,
+    even if you close it halfway through and come back.
+
+  * Checks with Telegram (@SpamBot) before every single
+    run, and refuses to send if your account is already
+    in trouble.
+
+  * Stops itself instantly if Telegram complains.
+
+  * Waits patiently if Telegram asks it to slow down.
+
+  * Sends to people you already know first, and only a
+    few brand-new people each day. New people are the
+    risky ones.
+
+  * Keeps a full record in  sent_log.csv  — who, when,
+    and whether it worked. Opens in Excel.
+
+
+--------------------------------------------------------
+  BUTTONS YOU MIGHT WONDER ABOUT
+--------------------------------------------------------
+
+  "Account health"
+      Asks Telegram whether your account is fine. Use it
+      any time you are unsure.
+
+  "Send again to everyone..."
+      Use this when you have a NEW message for the SAME
+      people. It forgets who already received the last
+      one, so everybody on that project's list can be
+      messaged again.
+      If you skip this, people who already got your last
+      message will be skipped.
+
+  "Speed & limits"
+      Change the sending speed, how many new people per
+      day, and the sending hours. The defaults are the
+      safe ones — only change them if you understand the
+      trade-off.
+
+
+--------------------------------------------------------
+  IF SOMETHING GOES WRONG
+--------------------------------------------------------
+
+  "Cannot send today - account is limited"
+      Telegram has restricted you. Nothing was sent.
+      Open Telegram, message @SpamBot, press its buttons
+      and appeal politely — say you were messaging your
+      own customers. It is usually lifted in 1 to 3 days.
+      Do not try again until it says you are clear.
+
+  "TELEGRAM HAS FLAGGED THIS ACCOUNT FOR SPAM"
+      It stopped itself to protect you. Do not send again
+      today. Check @SpamBot tomorrow.
+
+  "could not be found"
+      That username or number is wrong, or that person
+      has no Telegram. Fix the line and it will be picked
+      up next run.
+
+  "cannot receive messages from you"
+      Their own privacy setting, or they blocked you.
+      Nothing you can do.
+
+
+--------------------------------------------------------
+  THE ONE RULE
+--------------------------------------------------------
+
+  Only message people who expect to hear from you.
+
+  This tool paces itself carefully, but nothing on earth
+  can protect you from somebody pressing "Report Spam".
+  A handful of those does more damage than thousands of
+  well-paced messages. Send to your customers and
+  contacts — not to strangers.

@@ -1,0 +1,30 @@
+# ==========================================================================
+#  NEVER COMMIT THESE. They are private to whoever is running the tool.
+# ==========================================================================
+
+# A live login to the Telegram account. Anyone with this file IS that account.
+*.session
+*.session-journal
+
+# Contains the real api_id / api_hash and the phone number.
+config.json
+
+# The customer lists and message templates — personal data.
+projects.json
+
+# Who has been messaged and when — personal data.
+state.json
+state_archive_*.json
+sent_log.csv
+
+# ==========================================================================
+#  Build / local junk
+# ==========================================================================
+venv/
+env/
+__pycache__/
+*.pyc
+*.tmp
+run.log
+*.zip
+.DS_Store

@@ -763,5 +763,3 @@ class Sender:
         ps["failed"][target] = detail
         log_row(project, target, name, status, detail)
         save_state(state)
-
-# update-test marker

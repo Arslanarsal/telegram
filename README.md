@@ -89,3 +89,54 @@ Verified with a mock Telegram client, no live account needed:
 Not exercised without real credentials: the live login handshake and real
 `send_message` calls. Before the full list, run `--check`, then send to 2–3 of your own
 numbers.
+
+## Updates via GitHub
+
+The client's private data never enters git. `config.json`, `*.session`,
+`projects.json`, `state.json` and `sent_log.csv` are all ignored.
+
+Config is layered: `DEFAULT_CONFIG` → `config.default.json` (tracked template)
+→ `config.json` (his machine only). His `config.json` stores **only** his API
+keys plus settings he personally changed, so:
+
+- a `git pull` can never overwrite his keys, phone or choices
+- changing a shipped default reaches him automatically — unless he overrode it
+- new settings you add appear for him with no manual step
+
+### Your side
+
+```bash
+git remote add origin git@github.com:<you>/telegram-sender.git
+git push -u origin main          # first time
+# later
+git add -A && git commit -m "..." && git push
+```
+
+**Use a private repo.** Not because of secrets — those are excluded — but the
+code is a mass-DM tool and there's no reason to publish it.
+
+### His side
+
+One-time: install Git for Windows (https://git-scm.com/download/win, click Next
+on every screen), then clone once into `C:\TelegramSender`.
+
+After that he does nothing: **`START WINDOWS.bat` pulls the latest version
+automatically** on every launch and reinstalls requirements if they changed. It
+never blocks — no git, no internet, or a failed pull just carries on and opens
+the window.
+
+**`UPDATE WINDOWS.bat`** is there for when he wants to force it, or when you tell
+him to grab a fix right now. It says plainly that his lists and login aren't
+touched.
+
+### If a pull ever conflicts
+
+Only possible if he edited a tracked file by hand. Fix:
+
+```bash
+git checkout -- .    # throw away his local edits to tracked files
+git pull
+```
+
+His message, lists, settings and login are in ignored files, so that command is
+safe — it cannot touch them.

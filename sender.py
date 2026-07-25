@@ -28,7 +28,7 @@ import re
 from datetime import datetime, time as dtime, timedelta
 
 from telethon import TelegramClient, errors, functions
-from telethon.tl.types import User
+from telethon.tl.types import InputPhoneContact, User
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # config.default.json is tracked in git (placeholders only).
@@ -615,6 +615,36 @@ class Sender:
         except Exception:
             await self._sleep(dur, stop)
 
+    def _looks_like_phone(self, target):
+        t = str(target).strip()
+        return t.startswith("+") or (t.isdigit() and len(norm_phone(t)) >= 7)
+
+    async def _resolve(self, target, name):
+        """Find the person. A phone number that isn't a saved contact cannot be
+        looked up, so add it as a contact first — the same thing you'd do by
+        hand before messaging a new number."""
+        try:
+            return await self.client.get_entity(target)
+        except errors.FloodWaitError:
+            raise
+        except Exception:
+            if not self._looks_like_phone(target):
+                raise
+        phone = str(target).strip()
+        if not phone.startswith("+"):
+            phone = "+" + norm_phone(phone)
+        res = await self.client(functions.contacts.ImportContactsRequest(
+            [InputPhoneContact(client_id=random.randrange(1, 2 ** 62),
+                               phone=phone,
+                               first_name=(name or "Contact")[:64],
+                               last_name="")]))
+        if getattr(res, "users", None):
+            self.log(f"{phone} was not in your contacts — added it so the "
+                     f"message can be sent.", "warn")
+            return res.users[0]
+        raise ValueError("that number has no Telegram account, or their "
+                         "privacy settings block being found by number")
+
     async def _deliver(self, entity, text, attachment):
         """One message, with a photo/video/file attached if there is one."""
         if not attachment:
@@ -662,7 +692,7 @@ class Sender:
                       failed=failed)
 
             try:
-                entity = await self.client.get_entity(target)
+                entity = await self._resolve(target, name)
             except errors.FloodWaitError as e:
                 w = int(e.seconds * 1.2) + 5
                 self.log(f"Telegram asked us to wait {w}s. Waiting — normal.",
@@ -671,19 +701,20 @@ class Sender:
                     reason = "stopped by you"
                     break
                 try:
-                    entity = await self.client.get_entity(target)
+                    entity = await self._resolve(target, name)
                 except Exception as e2:
                     self._fail(ps, state, project, target, name, "not_found",
                                type(e2).__name__,
-                               f"{target}: could not be found")
+                               f"{target}: could not be reached — {e2}")
                     failed += 1
                     consecutive += 1
                     continue
             except Exception as e:
+                detail = (str(e) if isinstance(e, ValueError) else
+                          "check the username or number is correct")
                 self._fail(ps, state, project, target, name, "not_found",
                            type(e).__name__,
-                           f"{target}: could not be found — check the "
-                           f"username or number")
+                           f"{target}: could not be reached — {detail}")
                 failed += 1
                 consecutive += 1
                 continue

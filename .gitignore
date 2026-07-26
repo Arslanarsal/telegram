@@ -14,9 +14,11 @@ projects.json
 projects.backup.json
 people_journal.jsonl
 app.lock
+*.backup.json
 
 # Who has been messaged and when — personal data.
 state.json
+state.backup.json
 state_archive_*.json
 sent_log.csv
 

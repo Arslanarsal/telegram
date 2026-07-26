@@ -97,6 +97,7 @@ class App:
         self.running = False
         self.attachment = ""
         self.members = []          # [(target, name)] for the current group
+        self.save_failed = False
 
         root.title("Telegram Sender")
         root.geometry("1120x780")
@@ -110,6 +111,7 @@ class App:
         self._main_screen()
 
         self.root.after(80, self._drain)
+        self.root.after(2000, self._heartbeat)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         if not S.config_ready(self.cfg):
@@ -362,6 +364,7 @@ class App:
                  pad=6).pack(side="right")
         flat_btn(ph, "From a Telegram group…", self._on_import_group,
                  pad=6).pack(side="right")
+        flat_btn(ph, "Recover people", self._on_recover, pad=6).pack(side="right")
 
         ml = tk.Frame(pc, bg=PANEL)
         ml.pack(fill="both", expand=True, padx=12, pady=(0, 8))
@@ -520,10 +523,38 @@ class App:
     def _recipients_text(self):
         return "\n".join(f"{t}, {n}" if n else t for t, n in self.members) + "\n"
 
-    def _save_current_project(self):
-        S.set_project(self.projects, self.current,
-                      self.t_msg.get("1.0", "end").rstrip() + "\n",
-                      self._recipients_text(), self.attachment)
+    def _save_current_project(self, quiet=False):
+        """Save, and SHOUT if it did not reach the disk. A silent failed save is
+        exactly how people vanished before."""
+        try:
+            S.set_project(self.projects, self.current,
+                          self.t_msg.get("1.0", "end").rstrip() + "\n",
+                          self._recipients_text(), self.attachment)
+            self.save_failed = False
+            return True
+        except S.SaveError as e:
+            self.save_failed = True
+            self.log(f"COULD NOT SAVE! {e}", "bad")
+            self.log("Your people are still on screen but are NOT written to "
+                     "disk. Close OneDrive sync or move this folder out of "
+                     "OneDrive, then press Save again.", "bad")
+            if not quiet:
+                messagebox.showerror(
+                    "COULD NOT SAVE",
+                    "Windows would not let the file be written, so your changes "
+                    "are NOT saved yet.\n\n"
+                    f"{e}\n\n"
+                    "Usual cause: this folder is inside OneDrive, or antivirus "
+                    "is holding the file.\n\n"
+                    "Nothing is lost — everything you added is recorded "
+                    "separately and can be restored with \"Recover people\".")
+            return False
+        except Exception as e:
+            self.save_failed = True
+            self.log(f"COULD NOT SAVE! {type(e).__name__}: {e}", "bad")
+            if not quiet:
+                messagebox.showerror("COULD NOT SAVE", f"{type(e).__name__}: {e}")
+            return False
 
     def _refresh_members(self):
         self.lst_members.delete(0, "end")
@@ -611,6 +642,8 @@ class App:
             have.add(t.lower().lstrip("@"))
             added += 1
         self.e_add.delete(0, "end")
+        if added:
+            S.journal("add", self.current, self.members[-added:])
         self._refresh_members()
         self._save_current_project()
         if added:
@@ -632,6 +665,7 @@ class App:
                 "Remove these people?",
                 f"Remove {len(sel)} people from \"{self.current}\"?"):
             return
+        S.journal("remove", self.current, [self.members[i] for i in sel])
         for i in sorted(sel, reverse=True):
             del self.members[i]
         self._refresh_members()
@@ -660,9 +694,114 @@ class App:
             self.members.append((t, n))
             have.add(t.lower().lstrip("@"))
             added += 1
+        if added:
+            S.journal("add", self.current, self.members[-added:])
         self._refresh_members()
         self._save_current_project()
         self.log(f"Added {added} people from {os.path.basename(path)}.", "good")
+
+    def _on_recover(self):
+        """Restore people (and whole groups) from the append-only journal."""
+        rows = []
+        for g in S.journal_projects():
+            people = S.journal_recover(g)
+            if not people:
+                continue
+            exists = g in self.projects["projects"]
+            have = ({t.lower().lstrip("@") for t, _ in self.members}
+                    if g == self.current else
+                    {t.lower().lstrip("@") for t, _ in S.parse_recipients(
+                        S.get_project(self.projects, g).get("recipients", ""))}
+                    if exists else set())
+            missing = [(t, n) for t, n in people
+                       if t.lower().lstrip("@") not in have]
+            rows.append({"group": g, "people": people, "missing": missing,
+                         "exists": exists})
+        if not rows:
+            messagebox.showinfo("Nothing to recover",
+                                "There is no record of people being added yet.")
+            return
+        need = [r for r in rows if r["missing"] or not r["exists"]]
+        if not need:
+            messagebox.showinfo(
+                "Nothing missing",
+                "Everything in the record is already in your groups.")
+            return
+        self._recover_dialog(need)
+
+    def _recover_dialog(self, rows):
+        win = tk.Toplevel(self.root)
+        win.title("Recover people")
+        win.configure(bg=PANEL)
+        win.geometry("560x430")
+        win.transient(self.root)
+        tk.Label(win, text="These people were added before but are missing now.",
+                 bg=PANEL, fg=TEXT, font=F(12, True)).pack(anchor="w", padx=16,
+                                                           pady=(16, 2))
+        tk.Label(win, text="Everything you ever add is written to a separate "
+                           "record, so it can always be put back. Pick a group "
+                           "and click Restore.", bg=PANEL, fg=MUTED, font=F(9),
+                 wraplength=510, justify="left").pack(anchor="w", padx=16,
+                                                      pady=(0, 10))
+        lb = tk.Listbox(win, font=F(11), relief="flat", highlightthickness=1,
+                        highlightbackground=LINE, activestyle="none",
+                        selectbackground=ACCENT, selectforeground="white")
+        lb.pack(fill="both", expand=True, padx=16)
+        for r in rows:
+            gone = "" if r["exists"] else "   [group is gone too]"
+            lb.insert("end", f"  {r['group']} — {len(r['missing'])} missing "
+                             f"of {len(r['people'])}{gone}")
+
+        def restore(all_of_them=False):
+            picks = rows if all_of_them else (
+                [rows[i] for i in lb.curselection()])
+            if not picks:
+                messagebox.showinfo("Pick a group",
+                                    "Click a group in the list first.")
+                return
+            win.destroy()
+            done = 0
+            for r in picks:
+                g = r["group"]
+                if not r["exists"]:
+                    S.set_project(self.projects, g, "", "")
+                if g == self.current:
+                    self.members.extend(r["missing"])
+                    self._refresh_members()
+                    self._save_current_project()
+                else:
+                    p = S.get_project(self.projects, g)
+                    people = S.parse_recipients(p.get("recipients", "")) \
+                        + r["missing"]
+                    try:
+                        S.set_project(
+                            self.projects, g, p.get("message", ""),
+                            "\n".join(f"{t}, {n}" if n else t
+                                      for t, n in people) + "\n",
+                            p.get("attachment", ""))
+                    except S.SaveError as e:
+                        self.log(f"Could not save \"{g}\": {e}", "bad")
+                        continue
+                done += len(r["missing"])
+                self.log(f"Restored {len(r['missing'])} people into \"{g}\".",
+                         "good")
+            self.projects["current"] = self.current
+            self._reload_groups()
+            self._load_current_project()
+            messagebox.showinfo("Recovered",
+                               f"Put back {done} people.")
+
+        br = tk.Frame(win, bg=PANEL)
+        br.pack(pady=14)
+        tk.Button(br, text="Restore selected", command=restore, bg=GREEN,
+                  fg="white", font=F(11, True), relief="flat", bd=0,
+                  cursor="hand2", padx=18, pady=8, activebackground=GREEN_DARK,
+                  activeforeground="white").pack(side="left", padx=6)
+        tk.Button(br, text="Restore everything",
+                  command=lambda: restore(True), bg=ACCENT, fg="white",
+                  font=F(11, True), relief="flat", bd=0, cursor="hand2",
+                  padx=18, pady=8, activebackground=ACCENT_DARK,
+                  activeforeground="white").pack(side="left", padx=6)
 
     def _on_import_group(self):
         self.log("Reading your Telegram groups…", "info")
@@ -1100,6 +1239,11 @@ class App:
 
     # ============================================================== pump
 
+    def _heartbeat(self):
+        """Keeps the lock file fresh so a second copy knows we are alive."""
+        S.lock_touch()
+        self.root.after(5000, self._heartbeat)
+
     def _drain(self):
         try:
             while True:
@@ -1159,16 +1303,46 @@ class App:
             return
         try:
             if self.main.winfo_ismapped():
-                self._save_current_project()
+                # Only write if the file has not been changed by someone else
+                # since we loaded it — otherwise a second copy of the app would
+                # overwrite the newer data on the way out.
+                on_disk = S.load_projects()
+                mine = S.get_project(self.projects, self.current)
+                theirs = S.get_project(on_disk, self.current)
+                changed_elsewhere = (
+                    theirs.get("recipients", "") != mine.get("recipients", "")
+                    and len(S.parse_recipients(theirs.get("recipients", "")))
+                    > len(self.members))
+                if changed_elsewhere:
+                    self.log("Another copy of the app changed this group — not "
+                             "overwriting it on the way out.", "warn")
+                else:
+                    self._save_current_project(quiet=True)
         except Exception:
             pass
+        S.lock_release()
         self.backend.stop_flag.set()
         self.root.destroy()
 
 
 def main():
     root = tk.Tk()
-    App(root)
+    if S.lock_is_held():
+        if not messagebox.askyesno(
+                "Already running",
+                "Telegram Sender looks like it is already open in another "
+                "window.\n\nRunning two copies at once can lose your groups and "
+                "people, because each one saves over the other.\n\n"
+                "Open a second copy anyway? (Not recommended — click No, and "
+                "use the window that is already open.)"):
+            root.destroy()
+            return
+    S.lock_touch()
+    app = App(root)
+    if S.in_onedrive():
+        app.log("WARNING: this folder is inside OneDrive. OneDrive locks files "
+                "while it syncs, which can stop your groups from saving. Ask "
+                "your developer to move it out of OneDrive.", "bad")
     root.mainloop()
 
 

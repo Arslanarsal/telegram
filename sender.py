@@ -25,6 +25,7 @@ import json
 import os
 import random
 import re
+import time
 from datetime import datetime, time as dtime, timedelta
 
 from telethon import TelegramClient, errors, functions
@@ -36,6 +37,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_TEMPLATE_PATH = os.path.join(HERE, "config.default.json")
 CONFIG_PATH = os.path.join(HERE, "config.json")
 PROJECTS_PATH = os.path.join(HERE, "projects.json")
+PROJECTS_BACKUP_PATH = os.path.join(HERE, "projects.backup.json")
+JOURNAL_PATH = os.path.join(HERE, "people_journal.jsonl")
+LOCK_PATH = os.path.join(HERE, "app.lock")
 STATE_PATH = os.path.join(HERE, "state.json")
 LOG_PATH = os.path.join(HERE, "sent_log.csv")
 
@@ -97,6 +101,10 @@ DEFAULT_CONFIG = {
 # NOTE: every open() specifies encoding. Without this, Windows defaults to
 # cp1252 and any accented name, €, or emoji crashes the whole app.
 
+class SaveError(Exception):
+    """A save did not reach the disk. Never swallow this — the user must know."""
+
+
 def _read(path, default=""):
     if not os.path.exists(path):
         return default
@@ -104,11 +112,32 @@ def _read(path, default=""):
         return f.read()
 
 
-def _write(path, text):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
-    os.replace(tmp, path)
+def _write(path, text, attempts=6):
+    """Write, retrying through the transient locks OneDrive and antivirus take.
+
+    Writes to a temp file, flushes to the physical disk, then swaps it in. If it
+    still cannot be written after retrying, raises SaveError — silence here is
+    what loses people's data.
+    """
+    last = None
+    for i in range(attempts):
+        try:
+            tmp = f"{path}.tmp{os.getpid()}"
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            return
+        except (PermissionError, OSError) as e:
+            last = e
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            time.sleep(0.2 * (i + 1))
+    raise SaveError(f"Could not write {os.path.basename(path)} after "
+                    f"{attempts} tries: {last}")
 
 
 def _read_json(path, default):
@@ -122,10 +151,18 @@ def _read_json(path, default):
 
 
 def _write_json(path, obj):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, path)
+    """Write, then read it back and prove it landed. Keeps a second copy too."""
+    text = json.dumps(obj, indent=2, ensure_ascii=False)
+    _write(path, text)
+    check = _read_json(path, None)
+    if check != obj:
+        raise SaveError(f"{os.path.basename(path)} did not save correctly — the "
+                        f"file on disk does not match what was written.")
+    # a second copy, so one bad write can never be the end of the data
+    try:
+        _write(path.replace(".json", "") + ".backup.json", text)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- config
@@ -191,18 +228,137 @@ DEFAULT_MESSAGE = ""
 
 def load_projects():
     data = _read_json(PROJECTS_PATH, None)
+    if not (data and isinstance(data, dict) and data.get("projects")):
+        # main file missing or unreadable — fall back to the second copy and
+        # put it back where it belongs
+        backup = _read_json(PROJECTS_BACKUP_PATH, None)
+        if backup and isinstance(backup, dict) and backup.get("projects"):
+            data = backup
+            try:
+                _write(PROJECTS_PATH, json.dumps(data, indent=2,
+                                                 ensure_ascii=False))
+            except Exception:
+                pass
     if data and isinstance(data, dict) and data.get("projects"):
         return data
-    # first run: migrate the old single message.txt / recipients.txt if present
-    msg, rcpt = DEFAULT_MESSAGE, ""
-    data = {"projects": {"My first list": {"message": msg, "recipients": rcpt}},
+    data = {"projects": {"My first list": {"message": DEFAULT_MESSAGE,
+                                          "recipients": ""}},
             "current": "My first list"}
-    _write_json(PROJECTS_PATH, data)
+    try:
+        _write_json(PROJECTS_PATH, data)
+    except SaveError:
+        pass
     return data
 
 
 def save_projects(data):
     _write_json(PROJECTS_PATH, data)
+
+
+# ------------------------------------------------- append-only people journal
+# Every add and removal is appended here before anything else happens. Even if
+# projects.json is lost, corrupted, or clobbered by a second copy of the app,
+# the list of people can always be rebuilt from this.
+
+def journal(action, project, people):
+    """action is 'add' or 'remove'; people is [(target, name)]."""
+    try:
+        with open(JOURNAL_PATH, "a", encoding="utf-8") as f:
+            for target, name in people:
+                f.write(json.dumps({
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                    "action": action, "project": project,
+                    "target": target, "name": name or ""},
+                    ensure_ascii=False) + "\n")
+    except Exception:
+        pass          # the journal must never block real work
+
+
+def journal_recover(project):
+    """Replay the journal for one group -> the people it should contain."""
+    order, names = [], {}
+    if not os.path.exists(JOURNAL_PATH):
+        return []
+    try:
+        with open(JOURNAL_PATH, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if e.get("project") != project:
+                    continue
+                key = str(e.get("target", "")).lower().lstrip("@")
+                if not key:
+                    continue
+                if e.get("action") == "add":
+                    if key not in names:
+                        order.append(key)
+                    names[key] = (e["target"], e.get("name") or None)
+                elif e.get("action") == "remove":
+                    names.pop(key, None)
+                    if key in order:
+                        order.remove(key)
+    except Exception:
+        return []
+    return [names[k] for k in order if k in names]
+
+
+def journal_projects():
+    """Group names that appear in the journal, for offering recovery."""
+    out = set()
+    if not os.path.exists(JOURNAL_PATH):
+        return []
+    try:
+        with open(JOURNAL_PATH, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    out.add(json.loads(line)["project"])
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return sorted(out)
+
+
+# ------------------------------------------------------------- instance lock
+# Two copies of the app running at once was one cause of people vanishing:
+# whichever window closed last overwrote the other's file. The running app
+# touches this file every few seconds; a fresh timestamp means it is alive.
+
+LOCK_STALE_SECONDS = 25
+
+
+def lock_is_held():
+    try:
+        if not os.path.exists(LOCK_PATH):
+            return False
+        return (time.time() - os.path.getmtime(LOCK_PATH)) < LOCK_STALE_SECONDS
+    except Exception:
+        return False
+
+
+def lock_touch():
+    try:
+        with open(LOCK_PATH, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+
+
+def lock_release():
+    try:
+        os.remove(LOCK_PATH)
+    except Exception:
+        pass
+
+
+def in_onedrive():
+    p = HERE.replace("\\", "/").lower()
+    return "onedrive" in p
 
 
 def project_names(data):

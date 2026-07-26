@@ -11,6 +11,9 @@ config.json
 
 # The customer lists and message templates — personal data.
 projects.json
+projects.backup.json
+people_journal.jsonl
+app.lock
 
 # Who has been messaged and when — personal data.
 state.json

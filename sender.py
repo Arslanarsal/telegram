@@ -25,6 +25,8 @@ import json
 import os
 import random
 import re
+import shutil
+import sys
 import time
 from datetime import datetime, time as dtime, timedelta
 
@@ -32,16 +34,71 @@ from telethon import TelegramClient, errors, functions
 from telethon.tl.types import InputPhoneContact, User
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# config.default.json is tracked in git (placeholders only).
-# config.json is the live file with the real keys — git-ignored, never pushed.
+
+
+def data_dir():
+    """Where the user's own files live — deliberately NOT the app folder.
+
+    The app folder is a git clone and may sit on the Desktop, inside OneDrive.
+    OneDrive locks files while it syncs, which is what stopped groups saving.
+    LocalAppData (and its Mac/Linux equivalents) is never synced, so the data
+    is out of OneDrive's reach no matter where the app itself is installed.
+    """
+    env = os.environ.get("TELEGRAM_SENDER_DATA")
+    if env:
+        base = env
+    elif os.name == "nt":
+        base = os.path.join(os.environ.get("LOCALAPPDATA")
+                            or os.path.expanduser("~"), "TelegramSender")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support/TelegramSender")
+    else:
+        base = os.path.expanduser("~/.local/share/TelegramSender")
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        return HERE          # last resort: better to run than to refuse
+    return base
+
+
+DATA = data_dir()
+
+# Tracked in git (placeholders only) — this one stays with the code.
 CONFIG_TEMPLATE_PATH = os.path.join(HERE, "config.default.json")
-CONFIG_PATH = os.path.join(HERE, "config.json")
-PROJECTS_PATH = os.path.join(HERE, "projects.json")
-PROJECTS_BACKUP_PATH = os.path.join(HERE, "projects.backup.json")
-JOURNAL_PATH = os.path.join(HERE, "people_journal.jsonl")
-LOCK_PATH = os.path.join(HERE, "app.lock")
-STATE_PATH = os.path.join(HERE, "state.json")
-LOG_PATH = os.path.join(HERE, "sent_log.csv")
+
+# Everything below belongs to the user and lives outside the synced folder.
+CONFIG_PATH = os.path.join(DATA, "config.json")
+PROJECTS_PATH = os.path.join(DATA, "projects.json")
+PROJECTS_BACKUP_PATH = os.path.join(DATA, "projects.backup.json")
+JOURNAL_PATH = os.path.join(DATA, "people_journal.jsonl")
+LOCK_PATH = os.path.join(DATA, "app.lock")
+STATE_PATH = os.path.join(DATA, "state.json")
+LOG_PATH = os.path.join(DATA, "sent_log.csv")
+
+# Files left in the app folder by earlier versions get moved across once.
+MIGRATE = ("config.json", "projects.json", "projects.backup.json",
+           "people_journal.jsonl", "state.json", "sent_log.csv",
+           "main_account.session", "main_account.session-journal")
+
+
+def migrate_data():
+    """Move any old files out of the app folder. Returns what was moved."""
+    if DATA == HERE:
+        return []
+    moved = []
+    for name in MIGRATE:
+        src, dst = os.path.join(HERE, name), os.path.join(DATA, name)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                shutil.move(src, dst)
+                moved.append(name)
+            except Exception:
+                try:
+                    shutil.copy2(src, dst)
+                    moved.append(name)
+                except Exception:
+                    pass
+    return moved
 
 # Legacy single-list files, imported once into a project if they exist.
 MESSAGE_PATH = os.path.join(HERE, "message.txt")
@@ -572,7 +629,7 @@ class Sender:
 
     async def connect(self):
         self.client = TelegramClient(
-            os.path.join(HERE, self.cfg["session_name"]),
+            os.path.join(DATA, self.cfg["session_name"]),
             int(self.cfg["api_id"]), self.cfg["api_hash"],
         )
         await self.client.connect()

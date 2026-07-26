@@ -87,6 +87,7 @@ class App:
     def __init__(self, root):
         self.root = root
         self.q = queue.Queue()
+        self.migrated = S.migrate_data()   # must run before anything is loaded
         self.cfg = S.load_config()
         self.state = S.load_state()
         self.projects = S.load_projects()
@@ -1339,10 +1340,15 @@ def main():
             return
     S.lock_touch()
     app = App(root)
+    if app.migrated:
+        app.log(f"Moved your data somewhere safe: {S.DATA}", "good")
+        app.log(f"({', '.join(app.migrated)}) — OneDrive can no longer "
+                f"interfere with it.", "info")
+    app.log(f"Your groups and login are stored in: {S.DATA}", "info")
     if S.in_onedrive():
-        app.log("WARNING: this folder is inside OneDrive. OneDrive locks files "
-                "while it syncs, which can stop your groups from saving. Ask "
-                "your developer to move it out of OneDrive.", "bad")
+        app.log("This app folder is inside OneDrive, but your data is NOT — it "
+                "is kept outside, so syncing cannot affect your groups.",
+                "info")
     root.mainloop()
 
 

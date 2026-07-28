@@ -343,6 +343,8 @@ class App:
         self.lbl_gcount.pack(side="left")
         flat_btn(bar, "Account health", self._on_health).pack(side="right",
                                                              padx=(0, 8))
+        flat_btn(bar, "Delivery report", self._on_report).pack(side="right",
+                                                              padx=(0, 4))
         flat_btn(bar, "Send again to everyone",
                  self._on_new_campaign).pack(side="right")
         tk.Frame(right, bg=LINE, height=1).pack(fill="x")
@@ -1160,13 +1162,37 @@ class App:
             self._show_plan(plan, variants)
             q = len(plan["queue"])
             if q == 0:
+                # The commonest confusion: everyone already received the last
+                # message, so a new one queues nothing. Offer to do it here
+                # rather than sending them off to find another button.
+                if plan["already_done"]:
+                    if messagebox.askyesno(
+                            "They have already had a message",
+                            f"All {plan['already_done']} people in "
+                            f"\"{self.current}\" have already received a "
+                            f"message from this group.\n\nThat is why nothing "
+                            f"is queued — it stops people being messaged twice "
+                            f"by mistake.\n\nSend this NEW message to all "
+                            f"{plan['already_done']} of them now?"):
+                        self.state = S.reset_project_state(self.state,
+                                                           self.current)
+                        self.log(f"\"{self.current}\" reset — sending the new "
+                                 f"message to everyone.", "good")
+                        self.backend.submit(
+                            self.backend.sender.build_plan(
+                                recipients, self.state, self.current),
+                            after, lambda e: (self._reset_buttons(),
+                                              self.log(f"Could not prepare: {e}",
+                                                       "bad")))
+                        return
+                    self._reset_buttons()
+                    return
                 self._reset_buttons()
                 messagebox.showinfo(
                     "Nothing to send",
-                    "Everyone in this group already got this message, or "
-                    "today's limit for new people is used up.\n\nOpen this "
-                    "tomorrow and it carries on by itself.\n\nTo message the "
-                    "same people again, use \"Send again to everyone\".")
+                    "There is nobody to send to right now — today's limit for "
+                    "new people is used up.\n\nOpen this tomorrow and it "
+                    "carries on by itself.")
                 return
             if self.attachment and not os.path.exists(self.attachment):
                 self._reset_buttons()
@@ -1234,6 +1260,89 @@ class App:
         self.b_send.config(state="normal")
         self.b_check.config(state="normal")
         self.b_stop.config(state="disabled")
+
+    def _on_report(self):
+        """Exactly who received what, and when. Proof, not guesswork."""
+        rows, summary = S.delivery_report(self.current)
+        win = tk.Toplevel(self.root)
+        win.title(f"Delivery report — {self.current}")
+        win.configure(bg=PANEL)
+        win.geometry("780x520")
+        win.transient(self.root)
+
+        head = tk.Frame(win, bg=PANEL)
+        head.pack(fill="x", padx=16, pady=(16, 6))
+        tk.Label(head, text=f"{self.current}", bg=PANEL, fg=TEXT,
+                 font=F(14, True)).pack(side="left")
+        tk.Label(head, text=f"   {summary['sent']} delivered"
+                            + (f"   ·   {summary['failed']} could not be reached"
+                               if summary["failed"] else "")
+                            + f"   ·   over {summary['days']} day(s)",
+                 bg=PANEL, fg=GOOD if not summary["failed"] else WARN,
+                 font=F(11)).pack(side="left")
+
+        tk.Label(win, text="Every message this app has actually sent for this "
+                           "group. Times are when Telegram accepted it.",
+                 bg=PANEL, fg=MUTED, font=F(9)).pack(anchor="w", padx=16)
+
+        wrap = tk.Frame(win, bg=PANEL)
+        wrap.pack(fill="both", expand=True, padx=16, pady=8)
+        cols = ("when", "who", "name", "status")
+        tv = ttk.Treeview(wrap, columns=cols, show="headings")
+        for c, w in zip(cols, (150, 190, 150, 220)):
+            tv.heading(c, text={"when": "When", "who": "Sent to",
+                                "name": "Name", "status": "Result"}[c])
+            tv.column(c, width=w, anchor="w")
+        for r in rows:
+            when = str(r.get("timestamp", "")).replace("T", "  ")
+            st = r.get("status", "")
+            nice = {"sent": "delivered",
+                    "cannot_receive": "blocked you / privacy setting",
+                    "not_found": "number not found",
+                    "peer_flood": "STOPPED — Telegram spam flag",
+                    "error": "error"}.get(st, st)
+            if r.get("detail") and st != "sent":
+                nice += f"  ({r['detail']})"
+            # leading space keeps Tcl from reading "+3538..." as a number and
+            # swallowing the plus sign
+            tv.insert("", "end", values=(when, " " + str(r.get("target", "")),
+                                         r.get("name", ""), nice),
+                      tags=("ok" if st == "sent" else "bad",))
+        tv.tag_configure("ok", foreground=GOOD)
+        tv.tag_configure("bad", foreground=BAD)
+        tv.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=tv.yview)
+        sb.pack(side="right", fill="y")
+        tv.configure(yscrollcommand=sb.set)
+
+        if not rows:
+            tk.Label(win, text="Nothing has been sent for this group yet.",
+                     bg=PANEL, fg=MUTED, font=F(11)).pack(pady=8)
+
+        br = tk.Frame(win, bg=PANEL)
+        br.pack(pady=(0, 14))
+        tk.Button(br, text="Open the full log in Excel", command=self._open_log,
+                  bg=ACCENT, fg="white", font=F(10, True), relief="flat", bd=0,
+                  cursor="hand2", padx=16, pady=7,
+                  activebackground=ACCENT_DARK,
+                  activeforeground="white").pack(side="left", padx=6)
+        tk.Button(br, text="Close", command=win.destroy, relief="flat", bd=0,
+                  cursor="hand2", font=F(10), padx=16, pady=7).pack(side="left")
+
+    def _open_log(self):
+        path = S.LOG_PATH
+        if not os.path.exists(path):
+            messagebox.showinfo("No log yet", "Nothing has been sent yet.")
+            return
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                os.system(f'open "{path}"')
+            else:
+                os.system(f'xdg-open "{path}" &')
+        except Exception as e:
+            messagebox.showinfo("Log file", f"The full log is here:\n\n{path}\n\n({e})")
 
     def _on_health(self):
         self.log("Asking @SpamBot about your account…", "info")

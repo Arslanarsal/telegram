@@ -606,6 +606,27 @@ def warmup_ceiling(state, cfg):
     return WARMUP_RAMP[day] if 0 <= day < len(WARMUP_RAMP) else None
 
 
+def delivery_report(project=None, day=None):
+    """Read sent_log.csv back -> (rows, summary). Proof of what actually went."""
+    rows = []
+    if not os.path.exists(LOG_PATH):
+        return rows, {"sent": 0, "failed": 0, "days": 0}
+    try:
+        with open(LOG_PATH, encoding="utf-8", errors="replace", newline="") as f:
+            for r in csv.DictReader(f):
+                if project and r.get("project") != project:
+                    continue
+                if day and not str(r.get("timestamp", "")).startswith(day):
+                    continue
+                rows.append(r)
+    except Exception:
+        return rows, {"sent": 0, "failed": 0, "days": 0}
+    rows.reverse()                      # newest first
+    sent = sum(1 for r in rows if r.get("status") == "sent")
+    days = {str(r.get("timestamp", ""))[:10] for r in rows if r.get("timestamp")}
+    return rows, {"sent": sent, "failed": len(rows) - sent, "days": len(days)}
+
+
 def log_row(project, target, name, status, detail=""):
     new = not os.path.exists(LOG_PATH)
     with open(LOG_PATH, "a", newline="", encoding="utf-8") as f:

@@ -108,6 +108,10 @@ RECIPIENTS_PATH = os.path.join(HERE, "recipients.txt")
 # gradual growth and punishes sudden spikes. After this list: no ceiling.
 WARMUP_RAMP = [25, 40, 60, 90, 130, 180, 240]
 
+# How often a waiting run re-checks the clock and the sending hours. Small so
+# that changing the hours mid-wait takes effect almost immediately.
+HOURS_POLL_SECONDS = 10
+
 SPEED_PRESETS = {
     "safest": {"label": "Safest — slowest, strongly recommended",
                "delay_min": 45, "delay_max": 180,
@@ -783,26 +787,46 @@ class Sender:
     # -- pacing --------------------------------------------------------
 
     async def _wait_active_hours(self, stop):
-        start = parse_hhmm(self.cfg["active_hours_start"])
-        end = parse_hhmm(self.cfg["active_hours_end"])
-        told = False
+        """Hold until we are inside the allowed sending window.
+
+        The window is re-read from the config on every pass, so changing the
+        sending hours while a run is already waiting takes effect within a
+        minute. Reading it once up front meant a run that went to sleep at
+        21:30 kept last night's start time no matter what you changed it to.
+        """
+        told = None
         while not stop.is_set():
+            start = parse_hhmm(self.cfg["active_hours_start"])
+            end = parse_hhmm(self.cfg["active_hours_end"])
             now = datetime.now()
-            if start <= now.time() <= end:
+            t_now = now.time()
+
+            # a window like 22:00-06:00 runs through midnight
+            overnight = start > end
+            inside = (start <= t_now <= end) if not overnight else \
+                     (t_now >= start or t_now <= end)
+            if inside:
+                if told:
+                    self.log("Inside sending hours now — carrying on.", "good")
                 return True
-            t = now.replace(hour=start.hour, minute=start.minute,
-                            second=0, microsecond=0)
-            if now.time() > end:
-                t += timedelta(days=1)
-            if not told:
-                self.log(f"Outside sending hours "
-                         f"({self.cfg['active_hours_start']}–"
-                         f"{self.cfg['active_hours_end']}). Waiting until "
-                         f"{t:%H:%M}. You can leave this window open.", "warn")
-                told = True
-            self.emit("waiting", seconds=(t - now).total_seconds(),
+
+            nxt = now.replace(hour=start.hour, minute=start.minute,
+                              second=0, microsecond=0)
+            if nxt <= now:
+                nxt += timedelta(days=1)
+
+            window = (f"{self.cfg['active_hours_start']}–"
+                      f"{self.cfg['active_hours_end']}")
+            if told != window:
+                # says it again if the hours are changed mid-wait
+                self.log(f"Outside sending hours ({window}). Waiting until "
+                         f"{nxt:%H:%M}. You can leave this window open.", "warn")
+                told = window
+            self.emit("waiting", seconds=(nxt - now).total_seconds(),
                       wait_kind="night")
-            await self._sleep(min(60, (t - now).total_seconds()), stop)
+            await self._sleep(min(HOURS_POLL_SECONDS,
+                                  max(0.5, (nxt - now).total_seconds())),
+                              stop)
         return False
 
     async def _sleep(self, secs, stop, tick=None):

@@ -430,12 +430,17 @@ def get_project(data, name):
     p = data["projects"].get(name, {"message": DEFAULT_MESSAGE,
                                     "recipients": ""})
     p.setdefault("attachment", "")
+    p.setdefault("mode", "private")
+    p.setdefault("post_group", None)
     return p
 
 
-def set_project(data, name, message, recipients, attachment=""):
+def set_project(data, name, message, recipients, attachment="",
+                mode="private", post_group=None):
     data["projects"][name] = {"message": message, "recipients": recipients,
-                              "attachment": attachment or ""}
+                              "attachment": attachment or "",
+                              "mode": mode or "private",
+                              "post_group": post_group}
     data["current"] = name
     save_projects(data)
 
@@ -736,6 +741,23 @@ class Sender:
             if d.is_group:
                 out.append({"title": d.title or "(no name)", "id": d.id})
         return out
+
+    async def post_to_group(self, group_id, text, attachment=""):
+        """Post ONE message into a Telegram group chat.
+
+        The opposite of the normal mode: everyone in that group sees the same
+        message, and everyone sees the replies. Use only when that is wanted.
+        """
+        entity = await self.client.get_entity(group_id)
+        title = getattr(entity, "title", str(group_id))
+        try:
+            await self._deliver(entity, text, attachment)
+        except errors.ChatWriteForbiddenError:
+            raise ValueError(f"You are not allowed to post in \"{title}\" — "
+                             f"only admins can write there.")
+        except errors.ChatAdminRequiredError:
+            raise ValueError(f"\"{title}\" only lets admins post.")
+        return title
 
     async def group_members(self, group_id):
         """Real human members of a group -> [(target, name)]"""

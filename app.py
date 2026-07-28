@@ -97,6 +97,7 @@ class App:
         self.plan = None
         self.running = False
         self.attachment = ""
+        self.post_group = None
         self.members = []          # [(target, name)] for the current group
         self.save_failed = False
 
@@ -412,6 +413,25 @@ class App:
         self.t_msg.pack(fill="x", padx=12, pady=(6, 8))
         self.t_msg.bind("<KeyRelease>", lambda e: self._refresh_msg_label())
 
+        # ---- how to send: privately to each person, or one post in a group
+        mode = tk.Frame(cc, bg=PANEL)
+        mode.pack(fill="x", padx=12, pady=(2, 6))
+        self.v_mode = tk.StringVar(value="private")
+        tk.Label(mode, text="Send as", bg=PANEL, fg=TEXT,
+                 font=F(10, True)).pack(side="left")
+        tk.Radiobutton(mode, text="a private message to each person",
+                       variable=self.v_mode, value="private", bg=PANEL,
+                       font=F(10), selectcolor=PANEL, activebackground=PANEL,
+                       command=self._on_mode_change).pack(side="left", padx=(8, 4))
+        tk.Radiobutton(mode, text="one post in a Telegram group",
+                       variable=self.v_mode, value="group", bg=PANEL,
+                       font=F(10), selectcolor=PANEL, activebackground=PANEL,
+                       command=self._on_mode_change).pack(side="left", padx=4)
+        self.b_pickgroup = flat_btn(mode, "Choose group…", self._on_pick_post_group,
+                                    pad=6)
+        self.lbl_mode = tk.Label(mode, text="", bg=PANEL, fg=MUTED, font=F(9))
+        self.lbl_mode.pack(side="left", padx=6)
+
         act = tk.Frame(cc, bg=PANEL)
         act.pack(fill="x", padx=12, pady=(0, 12))
         flat_btn(act, "📎  Attach photo / video / file",
@@ -652,7 +672,10 @@ class App:
         self.t_msg.insert("1.0", p.get("message", ""))
         self.members = S.parse_recipients(p.get("recipients", ""))
         self.attachment = p.get("attachment", "") or ""
+        self.post_group = p.get("post_group") or None
+        self.v_mode.set(p.get("mode", "private"))
         self._refresh_members()
+        self._refresh_mode()
         self._refresh_attach()
         self._refresh_msg_label()
         self.lbl_gname.config(text=self.current)
@@ -666,7 +689,8 @@ class App:
         try:
             S.set_project(self.projects, self.current,
                           self.t_msg.get("1.0", "end").rstrip() + "\n",
-                          self._recipients_text(), self.attachment)
+                          self._recipients_text(), self.attachment,
+                          self.v_mode.get(), self.post_group)
             self.save_failed = False
             return True
         except S.SaveError as e:
@@ -699,6 +723,8 @@ class App:
             self.lst_members.insert("end", f" {t:<22} {n or ''}")
         self.lbl_gcount.config(text=f"{len(self.members)} people")
         self._reload_groups()
+        if hasattr(self, "lbl_mode"):
+            self._refresh_mode()
 
     def _on_new_project(self):
         name = simpledialog.askstring(
@@ -836,6 +862,121 @@ class App:
         self._refresh_members()
         self._save_current_project()
         self.log(f"Added {added} people from {os.path.basename(path)}.", "good")
+
+    # ---------------------------------------------- private vs group posting
+
+    def _on_mode_change(self):
+        self._refresh_mode()
+        self._save_current_project()
+        if self.v_mode.get() == "group":
+            self.log("Mode: ONE post into a Telegram group. Everyone in that "
+                     "group sees it, and everyone sees the replies.", "warn")
+            if not self.post_group:
+                self._on_pick_post_group()
+        else:
+            self.log("Mode: a separate private message to each person. Nobody "
+                     "sees anyone else.", "good")
+
+    def _refresh_mode(self):
+        group = self.v_mode.get() == "group"
+        if group:
+            self.b_pickgroup.pack(side="left", padx=4)
+            self.lbl_mode.config(
+                text=(f"→ posts once into \"{self.post_group['title']}\""
+                      if self.post_group else "→ pick which group to post in"),
+                fg=GOOD if self.post_group else BAD)
+        else:
+            self.b_pickgroup.pack_forget()
+            self.lbl_mode.config(text=f"→ {len(self.members)} separate private "
+                                      f"messages", fg=MUTED)
+
+    def _on_pick_post_group(self):
+        self.log("Reading your Telegram groups…", "info")
+
+        def done(groups):
+            if not groups:
+                messagebox.showinfo("No groups",
+                                    "This account is not in any groups.")
+                return
+            win = tk.Toplevel(self.root)
+            win.title("Which group to post in")
+            win.configure(bg=PANEL)
+            win.geometry("520x440")
+            win.transient(self.root)
+            tk.Label(win, text="Post the message into which Telegram group?",
+                     bg=PANEL, fg=TEXT, font=F(12, True)).pack(anchor="w",
+                                                               padx=16,
+                                                               pady=(16, 2))
+            tk.Label(win, text="One message goes into the group chat. Everyone "
+                               "in it sees the message and everyone sees the "
+                               "replies — the opposite of private sending.",
+                     bg=PANEL, fg=WARN, font=F(9), wraplength=470,
+                     justify="left").pack(anchor="w", padx=16, pady=(0, 10))
+            lb = tk.Listbox(win, font=F(11), relief="flat", highlightthickness=1,
+                            highlightbackground=LINE, activestyle="none",
+                            selectbackground=ACCENT, selectforeground="white")
+            lb.pack(fill="both", expand=True, padx=16)
+            for g in groups:
+                lb.insert("end", "  " + g["title"])
+
+            def choose():
+                sel = lb.curselection()
+                if not sel:
+                    messagebox.showinfo("Pick a group",
+                                        "Click a group in the list first.")
+                    return
+                self.post_group = dict(groups[sel[0]])
+                win.destroy()
+                self._refresh_mode()
+                self._save_current_project()
+                self.log(f"Will post into \"{self.post_group['title']}\".",
+                         "good")
+
+            tk.Button(win, text="Use this group", command=choose, bg=GREEN,
+                      fg="white", font=F(11, True), relief="flat", bd=0,
+                      cursor="hand2", padx=20, pady=8,
+                      activebackground=GREEN_DARK,
+                      activeforeground="white").pack(pady=14)
+
+        self.backend.submit(self.backend.sender.list_groups(), done,
+                            lambda e: self.log(f"Could not read groups: {e}",
+                                               "bad"))
+
+    def _send_to_group(self, variants):
+        if not self.post_group:
+            messagebox.showwarning("No group chosen",
+                                   "Click \"Choose group…\" and pick which "
+                                   "Telegram group to post in.")
+            return
+        text = S.render(variants, "")
+        if not messagebox.askyesno(
+                "Post in the group?",
+                f"Post this message once into \"{self.post_group['title']}\"?\n\n"
+                f"Everyone in that group will see it, and everyone will see "
+                f"any replies.\n\nThis is not the private one-to-one sending."):
+            return
+        self.b_send.config(state="disabled")
+        self.lbl_status.config(text="Posting…")
+
+        def done(title):
+            self._reset_buttons()
+            S.log_row(self.current, f"group:{self.post_group['title']}", "",
+                      "sent", "posted in group")
+            self.lbl_status.config(text=f"Posted in \"{title}\".")
+            self.log(f"Posted in the Telegram group \"{title}\". Everyone in "
+                     f"it can see it.", "good")
+            messagebox.showinfo("Posted", f"Your message is now in "
+                                          f"\"{title}\".")
+
+        def err(e):
+            self._reset_buttons()
+            self.lbl_status.config(text="Could not post.")
+            self.log(f"Could not post: {e}", "bad")
+            messagebox.showerror("Could not post", str(e))
+
+        self.backend.submit(
+            self.backend.sender.post_to_group(self.post_group["id"], text,
+                                              self.attachment), done, err)
 
     def _on_recover(self):
         """Restore people (and whole groups) from the append-only journal."""
@@ -1147,6 +1288,13 @@ class App:
                 "\n", "\n    "), "info")
 
     def _on_send(self):
+        if self.v_mode.get() == "group":
+            v = S.parse_message_variants(self.t_msg.get("1.0", "end"))
+            if not v:
+                messagebox.showwarning("No message", "Type your message first.")
+                return
+            self._send_to_group(v)
+            return
         got = self._inputs()
         if not got:
             return

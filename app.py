@@ -343,7 +343,6 @@ class App:
         self.lbl_gcount.pack(side="left")
         flat_btn(bar, "Account health", self._on_health).pack(side="right",
                                                              padx=(0, 8))
-        flat_btn(bar, "Speed & limits", self._on_settings).pack(side="right")
         flat_btn(bar, "Send again to everyone",
                  self._on_new_campaign).pack(side="right")
         tk.Frame(right, bg=LINE, height=1).pack(fill="x")
@@ -438,6 +437,48 @@ class App:
         self.lbl_msg = tk.Label(act, text="", bg=PANEL, fg=MUTED, font=F(9))
         self.lbl_msg.pack(side="right", padx=8)
 
+        # -------- settings, editable right here on the dashboard
+        sc = tk.Frame(mid, bg=PANEL, highlightbackground=LINE,
+                      highlightthickness=1)
+        sc.pack(fill="x", pady=(12, 0))
+        sr = tk.Frame(sc, bg=PANEL)
+        sr.pack(fill="x", padx=12, pady=10)
+
+        tk.Label(sr, text="Sending hours", bg=PANEL, fg=TEXT,
+                 font=F(10, True)).pack(side="left")
+        self.e_from = self._small_entry(sr, self.cfg.get("active_hours_start",
+                                                         "09:00"))
+        tk.Label(sr, text="to", bg=PANEL, fg=MUTED, font=F(10)).pack(side="left")
+        self.e_to = self._small_entry(sr, self.cfg.get("active_hours_end",
+                                                       "21:30"))
+
+        tk.Label(sr, text="   Speed", bg=PANEL, fg=TEXT,
+                 font=F(10, True)).pack(side="left")
+        self.speed_labels = {k: v["label"].split("—")[0].strip()
+                             for k, v in S.SPEED_PRESETS.items()}
+        self.cb_speed = ttk.Combobox(sr, state="readonly", width=9, font=F(10),
+                                     values=list(self.speed_labels.values()))
+        self.cb_speed.set(self.speed_labels.get(self.cfg.get("speed", "safest"),
+                                                "Safest"))
+        self.cb_speed.pack(side="left", padx=6)
+        self.cb_speed.bind("<<ComboboxSelected>>", lambda e: self._apply_settings())
+
+        tk.Label(sr, text="   Max NEW people per day", bg=PANEL, fg=TEXT,
+                 font=F(10, True)).pack(side="left")
+        self.e_new = self._small_entry(sr, str(self.cfg.get("daily_cap_new", 15)),
+                                       width=5)
+
+        self.v_warm = tk.BooleanVar(value=self.cfg.get("use_warmup", True))
+        tk.Checkbutton(sr, variable=self.v_warm, bg=PANEL, font=F(10),
+                       selectcolor=PANEL, text="First-week warm-up",
+                       activebackground=PANEL,
+                       command=self._apply_settings).pack(side="left", padx=(12, 0))
+
+        self.lbl_settings = tk.Label(sc, text="", bg=PANEL, fg=MUTED, font=F(9),
+                                     anchor="w")
+        self.lbl_settings.pack(fill="x", padx=12, pady=(0, 10))
+        self._settings_hint()
+
         # -------- status + log
         st = tk.Frame(right, bg=BG)
         st.pack(fill="both", expand=False, padx=14, pady=(0, 10))
@@ -454,6 +495,99 @@ class App:
         for tag, col in (("good", GOOD), ("bad", BAD), ("warn", WARN),
                          ("info", TEXT)):
             self.t_log.tag_config(tag, foreground=col)
+
+    def _small_entry(self, parent, value, width=7):
+        e = tk.Entry(parent, width=width, font=F(10), relief="flat",
+                     justify="center", bg="#f5f6f7", highlightthickness=1,
+                     highlightbackground=LINE, highlightcolor=ACCENT)
+        e.insert(0, value)
+        e.pack(side="left", padx=5, ipady=3)
+        e.bind("<Return>", lambda ev: self._apply_settings())
+        e.bind("<FocusOut>", lambda ev: self._apply_settings())
+        return e
+
+    def _settings_hint(self):
+        self.lbl_settings.config(
+            text="Change any of these whenever you like — it takes effect "
+                 "straight away, even in the middle of a send.", fg=MUTED)
+
+    def _apply_settings(self, _=None):
+        """Validate and apply the dashboard settings immediately."""
+        start, end = self.e_from.get().strip(), self.e_to.get().strip()
+        for e, v in ((self.e_from, start), (self.e_to, end)):
+            try:
+                S.parse_hhmm(v)
+            except Exception:
+                self.lbl_settings.config(
+                    text=f"\"{v}\" is not a time. Write it like 05:00 or 21:30.",
+                    fg=BAD)
+                e.delete(0, "end")
+                e.insert(0, self.cfg["active_hours_start"] if e is self.e_from
+                         else self.cfg["active_hours_end"])
+                return
+        try:
+            new_cap = int(self.e_new.get().strip())
+            if new_cap < 0:
+                raise ValueError
+        except ValueError:
+            self.lbl_settings.config(
+                text="Max new people per day must be a whole number.", fg=BAD)
+            self.e_new.delete(0, "end")
+            self.e_new.insert(0, str(self.cfg.get("daily_cap_new", 15)))
+            return
+
+        picked = self.cb_speed.get()
+        speed = next((k for k, lbl in self.speed_labels.items()
+                      if lbl == picked), self.cfg.get("speed", "safest"))
+
+        changes = []
+        if start != self.cfg["active_hours_start"] or \
+                end != self.cfg["active_hours_end"]:
+            changes.append(f"hours {start}–{end}")
+        if speed != self.cfg.get("speed"):
+            if speed == "fast" and not messagebox.askyesno(
+                    "Fast is risky",
+                    "Fast sends every 8–30 seconds — the pattern Telegram's "
+                    "spam system looks for.\n\nUse it anyway?"):
+                self.cb_speed.set(self.speed_labels.get(self.cfg.get("speed"),
+                                                        "Safest"))
+                return
+            changes.append(f"speed {speed}")
+        if new_cap != self.cfg.get("daily_cap_new"):
+            if new_cap > 40 and not messagebox.askyesno(
+                    "That is high",
+                    f"{new_cap} new people a day is above what accounts survive "
+                    f"long term.\n\nSet it anyway?"):
+                self.e_new.delete(0, "end")
+                self.e_new.insert(0, str(self.cfg.get("daily_cap_new", 15)))
+                return
+            changes.append(f"max new/day {new_cap}")
+        if bool(self.v_warm.get()) != bool(self.cfg.get("use_warmup", True)):
+            changes.append("warm-up "
+                           + ("on" if self.v_warm.get() else "OFF"))
+        if not changes:
+            self._settings_hint()
+            return
+
+        # mutate the same dict the running sender holds, so it picks this up
+        self.cfg["active_hours_start"] = start
+        self.cfg["active_hours_end"] = end
+        self.cfg["daily_cap_new"] = new_cap
+        self.cfg["use_warmup"] = bool(self.v_warm.get())
+        S.apply_speed(self.cfg, speed)
+        try:
+            S.save_config(self.cfg)
+        except S.SaveError as e:
+            self.lbl_settings.config(text=f"COULD NOT SAVE: {e}", fg=BAD)
+            return
+        self.lbl_settings.config(text="Saved: " + ", ".join(changes)
+                                 + ".  Applies immediately, even mid-send.",
+                                 fg=GOOD)
+        self.log("Settings changed — " + ", ".join(changes) + ".", "good")
+        if self.running:
+            self.log("The send that is running will pick this up within a few "
+                     "seconds.", "info")
+        self.root.after(6000, self._settings_hint)
 
     def show_main(self):
         self.setup.pack_forget()
@@ -1132,111 +1266,6 @@ class App:
         self.log(f"\"{self.current}\" reset — everyone can receive the next "
                  f"message.", "good")
         self.lbl_status.config(text="Ready to send to everyone again.")
-
-    def _on_settings(self):
-        win = tk.Toplevel(self.root)
-        win.title("Speed & limits")
-        win.configure(bg=PANEL)
-        win.geometry("620x520")
-        win.transient(self.root)
-
-        tk.Label(win, text="Speed", bg=PANEL, fg=TEXT,
-                 font=F(13, True)).pack(anchor="w", padx=18, pady=(18, 2))
-        tk.Label(win, text="Slower is safer. The pacing is the main thing "
-                           "protecting the account.", bg=PANEL, fg=MUTED,
-                 font=F(9), wraplength=560,
-                 justify="left").pack(anchor="w", padx=18)
-        speed = tk.StringVar(value=self.cfg.get("speed", "safest"))
-        for key, p in S.SPEED_PRESETS.items():
-            tk.Radiobutton(win, text=p["label"], variable=speed, value=key,
-                           bg=PANEL, font=F(11), anchor="w",
-                           fg=BAD if key == "fast" else TEXT,
-                           selectcolor=PANEL).pack(anchor="w", padx=28)
-
-        tk.Label(win, text="Daily limits", bg=PANEL, fg=TEXT,
-                 font=F(13, True)).pack(anchor="w", padx=18, pady=(16, 2))
-        unlimited = tk.BooleanVar(value=self.cfg.get("unlimited_known", True))
-        tk.Checkbutton(win, variable=unlimited, bg=PANEL, font=F(11),
-                       anchor="w", selectcolor=PANEL,
-                       text="No daily limit for people I already know "
-                            "(recommended)").pack(anchor="w", padx=28)
-        tk.Label(win, text="Your saved contacts and anyone you already have a "
-                           "chat with. Telegram's spam limits target strangers, "
-                           "not these people.", bg=PANEL, fg=MUTED, font=F(9),
-                 wraplength=540, justify="left").pack(anchor="w", padx=48)
-
-        f2 = tk.Frame(win, bg=PANEL)
-        f2.pack(anchor="w", padx=28, pady=(10, 0))
-        tk.Label(f2, text="Max NEW people per day:", bg=PANEL,
-                 font=F(11)).pack(side="left")
-        e_new = tk.Entry(f2, width=6, font=F(11))
-        e_new.pack(side="left", padx=8)
-        e_new.insert(0, str(self.cfg.get("daily_cap_new", 15)))
-        tk.Label(win, text="People you have never messaged. THIS is the number "
-                           "that gets accounts banned. 15 or less is sensible; "
-                           "above 40 is asking for trouble.", bg=PANEL, fg=WARN,
-                 font=F(9), wraplength=540,
-                 justify="left").pack(anchor="w", padx=48)
-
-        f3 = tk.Frame(win, bg=PANEL)
-        f3.pack(anchor="w", padx=28, pady=(12, 0))
-        tk.Label(f3, text="Sending hours:", bg=PANEL, font=F(11)).pack(side="left")
-        e_from = tk.Entry(f3, width=7, font=F(11))
-        e_from.pack(side="left", padx=6)
-        e_from.insert(0, self.cfg.get("active_hours_start", "09:00"))
-        tk.Label(f3, text="to", bg=PANEL, font=F(11)).pack(side="left")
-        e_to = tk.Entry(f3, width=7, font=F(11))
-        e_to.pack(side="left", padx=6)
-        e_to.insert(0, self.cfg.get("active_hours_end", "21:30"))
-
-        warm = tk.BooleanVar(value=self.cfg.get("use_warmup", True))
-        tk.Checkbutton(win, variable=warm, bg=PANEL, font=F(11),
-                       selectcolor=PANEL,
-                       text="Use the first-week warm-up (recommended)").pack(
-            anchor="w", padx=28, pady=(12, 0))
-
-        def save():
-            try:
-                n = int(e_new.get().strip())
-                if n < 0:
-                    raise ValueError
-            except ValueError:
-                messagebox.showwarning("Check that number",
-                                       "Max new people per day must be a whole "
-                                       "number, 0 or more.")
-                return
-            for e in (e_from, e_to):
-                try:
-                    S.parse_hhmm(e.get().strip())
-                except Exception:
-                    messagebox.showwarning("Check the times",
-                                           "Times must look like 09:00")
-                    return
-            if n > 40 and not messagebox.askyesno(
-                    "That is high",
-                    f"{n} new people per day is above what accounts survive "
-                    f"long-term.\n\nSet it anyway?"):
-                return
-            if speed.get() == "fast" and not messagebox.askyesno(
-                    "Fast is risky",
-                    "Fast mode sends every 8–30 seconds — the pattern "
-                    "Telegram's spam system looks for.\n\nUse it anyway?"):
-                return
-            S.apply_speed(self.cfg, speed.get())
-            self.cfg["unlimited_known"] = bool(unlimited.get())
-            self.cfg["daily_cap_new"] = n
-            self.cfg["active_hours_start"] = e_from.get().strip()
-            self.cfg["active_hours_end"] = e_to.get().strip()
-            self.cfg["use_warmup"] = bool(warm.get())
-            S.save_config(self.cfg)
-            self.log(f"Settings saved — speed: {self.cfg['speed']}, new people "
-                     f"per day: {n}.", "good")
-            win.destroy()
-
-        tk.Button(win, text="Save", command=save, bg=GREEN, fg="white",
-                  font=F(12, True), relief="flat", bd=0, cursor="hand2",
-                  padx=26, pady=8, activebackground=GREEN_DARK,
-                  activeforeground="white").pack(pady=18)
 
     # ============================================================== pump
 

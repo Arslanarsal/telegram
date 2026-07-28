@@ -153,6 +153,7 @@ DEFAULT_CONFIG = {
     "daily_cap_new": 15,
     "stop_after_consecutive_errors": 5,
     "check_spambot_before_run": True,
+    "simulate_typing": True,
     "abort_on_peer_flood": True,
     "use_warmup": True,
 }
@@ -889,6 +890,8 @@ class Sender:
                                         self.cfg["read_pause_max"]), stop)
         dur = len(text) * self.cfg["typing_per_char"] * random.uniform(0.8, 1.25)
         dur = max(self.cfg["typing_min"], min(self.cfg["typing_max"], dur))
+        if not self.cfg.get("simulate_typing", True):
+            return await self._sleep(dur, stop)
         try:
             async with self.client.action(entity, action):
                 await self._sleep(dur, stop)

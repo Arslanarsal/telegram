@@ -496,6 +496,47 @@ class App:
                        activebackground=PANEL,
                        command=self._apply_settings).pack(side="left", padx=(12, 0))
 
+        # second row — everything else, so nothing is hidden from him
+        sr2 = tk.Frame(sc, bg=PANEL)
+        sr2.pack(fill="x", padx=12, pady=(0, 6))
+
+        self.v_unlim = tk.BooleanVar(value=self.cfg.get("unlimited_known", True))
+        tk.Checkbutton(sr2, variable=self.v_unlim, bg=PANEL, font=F(10),
+                       selectcolor=PANEL, activebackground=PANEL,
+                       text="No limit for people I know",
+                       command=self._apply_settings).pack(side="left")
+
+        tk.Label(sr2, text="   if limited, max/day", bg=PANEL, fg=MUTED,
+                 font=F(9)).pack(side="left")
+        self.e_known = self._small_entry(sr2,
+                                         str(self.cfg.get("daily_cap_known", 300)),
+                                         width=5)
+
+        tk.Label(sr2, text="   Stop after", bg=PANEL, fg=TEXT,
+                 font=F(10, True)).pack(side="left")
+        self.e_errs = self._small_entry(
+            sr2, str(self.cfg.get("stop_after_consecutive_errors", 5)), width=4)
+        tk.Label(sr2, text="errors in a row", bg=PANEL, fg=MUTED,
+                 font=F(9)).pack(side="left")
+
+        self.v_spam = tk.BooleanVar(
+            value=self.cfg.get("check_spambot_before_run", True))
+        tk.Checkbutton(sr2, variable=self.v_spam, bg=PANEL, font=F(10),
+                       selectcolor=PANEL, activebackground=PANEL,
+                       text="Check account health first",
+                       command=self._apply_settings).pack(side="left", padx=(12, 0))
+
+        self.v_typing = tk.BooleanVar(value=self.cfg.get("simulate_typing", True))
+        tk.Checkbutton(sr2, variable=self.v_typing, bg=PANEL, font=F(10),
+                       selectcolor=PANEL, activebackground=PANEL,
+                       text="Show typing",
+                       command=self._apply_settings).pack(side="left", padx=(8, 0))
+
+        flat_btn(sr2, "Why is nothing sending?", self._on_diagnose,
+                 bold=True, pad=6).pack(side="right")
+        flat_btn(sr2, "Reset to safe defaults", self._on_reset_settings,
+                 pad=6).pack(side="right")
+
         self.lbl_settings = tk.Label(sc, text="", bg=PANEL, fg=MUTED, font=F(9),
                                      anchor="w")
         self.lbl_settings.pack(fill="x", padx=12, pady=(0, 10))
@@ -548,6 +589,20 @@ class App:
                          else self.cfg["active_hours_end"])
                 return
         try:
+            known_cap = int(self.e_known.get().strip())
+            errs = int(self.e_errs.get().strip())
+            if known_cap < 1 or errs < 1:
+                raise ValueError
+        except ValueError:
+            self.lbl_settings.config(
+                text="Max/day and \"stop after errors\" must be whole numbers "
+                     "of 1 or more.", fg=BAD)
+            self.e_known.delete(0, "end")
+            self.e_known.insert(0, str(self.cfg.get("daily_cap_known", 300)))
+            self.e_errs.delete(0, "end")
+            self.e_errs.insert(0, str(self.cfg.get("stop_after_consecutive_errors", 5)))
+            return
+        try:
             new_cap = int(self.e_new.get().strip())
             if new_cap < 0:
                 raise ValueError
@@ -585,8 +640,17 @@ class App:
                 return
             changes.append(f"max new/day {new_cap}")
         if bool(self.v_warm.get()) != bool(self.cfg.get("use_warmup", True)):
-            changes.append("warm-up "
-                           + ("on" if self.v_warm.get() else "OFF"))
+            changes.append("warm-up " + ("on" if self.v_warm.get() else "OFF"))
+        for var, key, label in (
+                (self.v_unlim, "unlimited_known", "no limit for known people"),
+                (self.v_spam, "check_spambot_before_run", "health check"),
+                (self.v_typing, "simulate_typing", "typing indicator")):
+            if bool(var.get()) != bool(self.cfg.get(key, True)):
+                changes.append(f"{label} " + ("on" if var.get() else "OFF"))
+        if known_cap != self.cfg.get("daily_cap_known"):
+            changes.append(f"known max/day {known_cap}")
+        if errs != self.cfg.get("stop_after_consecutive_errors"):
+            changes.append(f"stop after {errs} errors")
         if not changes:
             self._settings_hint()
             return
@@ -596,6 +660,11 @@ class App:
         self.cfg["active_hours_end"] = end
         self.cfg["daily_cap_new"] = new_cap
         self.cfg["use_warmup"] = bool(self.v_warm.get())
+        self.cfg["unlimited_known"] = bool(self.v_unlim.get())
+        self.cfg["daily_cap_known"] = known_cap
+        self.cfg["stop_after_consecutive_errors"] = errs
+        self.cfg["check_spambot_before_run"] = bool(self.v_spam.get())
+        self.cfg["simulate_typing"] = bool(self.v_typing.get())
         S.apply_speed(self.cfg, speed)
         try:
             S.save_config(self.cfg)
@@ -610,6 +679,140 @@ class App:
             self.log("The send that is running will pick this up within a few "
                      "seconds.", "info")
         self.root.after(6000, self._settings_hint)
+
+    def _on_reset_settings(self):
+        if not messagebox.askyesno(
+                "Reset settings",
+                "Put the speed, limits and sending hours back to the safe "
+                "defaults?\n\nYour groups, people and messages are not "
+                "touched."):
+            return
+        for k in ("speed", "active_hours_start", "active_hours_end",
+                  "unlimited_known", "daily_cap_known", "daily_cap_new",
+                  "stop_after_consecutive_errors", "check_spambot_before_run",
+                  "simulate_typing", "use_warmup"):
+            self.cfg[k] = S.DEFAULT_CONFIG[k]
+        S.apply_speed(self.cfg, S.DEFAULT_CONFIG["speed"])
+        try:
+            S.save_config(self.cfg)
+        except S.SaveError as e:
+            self.log(f"Could not save: {e}", "bad")
+            return
+        for e, v in ((self.e_from, self.cfg["active_hours_start"]),
+                     (self.e_to, self.cfg["active_hours_end"]),
+                     (self.e_new, self.cfg["daily_cap_new"]),
+                     (self.e_known, self.cfg["daily_cap_known"]),
+                     (self.e_errs, self.cfg["stop_after_consecutive_errors"])):
+            e.delete(0, "end")
+            e.insert(0, str(v))
+        self.cb_speed.set(self.speed_labels[self.cfg["speed"]])
+        self.v_warm.set(self.cfg["use_warmup"])
+        self.v_unlim.set(self.cfg["unlimited_known"])
+        self.v_spam.set(self.cfg["check_spambot_before_run"])
+        self.v_typing.set(self.cfg["simulate_typing"])
+        self.lbl_settings.config(text="Back to the safe defaults.", fg=GOOD)
+        self.log("Settings reset to the safe defaults.", "good")
+
+    def _on_diagnose(self):
+        """Plain-English answer to 'why has nothing gone out?'"""
+        issues, fine = [], []
+
+        if self.v_mode.get() == "group":
+            if self.post_group:
+                fine.append(f"Set to post once into \"{self.post_group['title']}\" "
+                            f"— not private messages.")
+            else:
+                issues.append("You picked \"one post in a Telegram group\" but "
+                              "have not chosen which group. Click "
+                              "\"Choose group…\".")
+        if not S.parse_message_variants(self.t_msg.get("1.0", "end")):
+            issues.append("No message typed yet.")
+        if self.v_mode.get() == "private" and not self.members:
+            issues.append(f"There is nobody in \"{self.current}\". Add people "
+                          f"with the box under the list.")
+        if self.attachment and not os.path.exists(self.attachment):
+            issues.append(f"The attached file is missing: "
+                          f"{os.path.basename(self.attachment)}")
+        if self.running:
+            fine.append("A send is running right now — that is why SEND is "
+                        "greyed out.")
+
+        # clock
+        try:
+            from datetime import datetime as _dt
+            start = S.parse_hhmm(self.cfg["active_hours_start"])
+            end = S.parse_hhmm(self.cfg["active_hours_end"])
+            now = _dt.now().time()
+            overnight = start > end
+            inside = (start <= now <= end) if not overnight else \
+                     (now >= start or now <= end)
+            if inside:
+                fine.append(f"The clock is fine — inside your sending hours "
+                            f"({self.cfg['active_hours_start']}–"
+                            f"{self.cfg['active_hours_end']}).")
+            else:
+                issues.append(f"It is {now:%H:%M}, outside your sending hours "
+                              f"({self.cfg['active_hours_start']}–"
+                              f"{self.cfg['active_hours_end']}). It will start "
+                              f"at {self.cfg['active_hours_start']}. Change the "
+                              f"hours above if you want it sooner.")
+        except Exception:
+            pass
+
+        if self.save_failed:
+            issues.append("The last save did not reach the disk. Your changes "
+                          "may not be kept.")
+
+        k, n = S.sent_today(self.state)
+        ceil = S.warmup_ceiling(self.state, self.cfg)
+        fine.append(f"Sent today: {k} to people you know, {n} to new people.")
+        if ceil is not None and (k + n) >= ceil:
+            issues.append(f"Today's first-week limit of {ceil} messages is used "
+                          f"up. It rises tomorrow, or untick \"First-week "
+                          f"warm-up\" above.")
+        if n >= self.cfg.get("daily_cap_new", 15):
+            issues.append(f"Today's limit for NEW people "
+                          f"({self.cfg['daily_cap_new']}) is used up. People "
+                          f"already in your contacts are not affected.")
+
+        ps = S.project_state(self.state, self.current)
+        if self.members and len(ps["sent"]) >= len(self.members):
+            issues.append(f"All {len(ps['sent'])} people in "
+                          f"\"{self.current}\" already received a message. "
+                          f"Press SEND and say yes when it offers to send the "
+                          f"new message to them again.")
+
+        self._show_diagnosis(issues, fine)
+
+    def _show_diagnosis(self, issues, fine):
+        win = tk.Toplevel(self.root)
+        win.title("Why is nothing sending?")
+        win.configure(bg=PANEL)
+        win.geometry("640x460")
+        win.transient(self.root)
+        if issues:
+            tk.Label(win, text="Here is what is stopping it", bg=PANEL, fg=BAD,
+                     font=F(14, True)).pack(anchor="w", padx=18, pady=(18, 6))
+        else:
+            tk.Label(win, text="Nothing is wrong — it is ready to send",
+                     bg=PANEL, fg=GOOD,
+                     font=F(14, True)).pack(anchor="w", padx=18, pady=(18, 6))
+        box = tk.Text(win, wrap="word", font=F(11), relief="flat",
+                      bg="#fbfbfc", highlightthickness=1,
+                      highlightbackground=LINE, padx=12, pady=12)
+        box.pack(fill="both", expand=True, padx=18, pady=(0, 8))
+        for i, m in enumerate(issues, 1):
+            box.insert("end", f"{i}.  {m}\n\n", "bad")
+        if fine:
+            box.insert("end", "\nEverything else:\n\n", "head")
+            for m in fine:
+                box.insert("end", f"•  {m}\n", "ok")
+        box.tag_config("bad", foreground=BAD)
+        box.tag_config("ok", foreground=MUTED)
+        box.tag_config("head", foreground=TEXT, font=F(11, True))
+        box.config(state="disabled")
+        tk.Button(win, text="Close", command=win.destroy, relief="flat", bd=0,
+                  cursor="hand2", font=F(11), padx=20, pady=7).pack(pady=(0, 14))
 
     def show_main(self):
         self.setup.pack_forget()

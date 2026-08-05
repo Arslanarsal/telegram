@@ -88,11 +88,22 @@ WHAT IT DOES
   TO ADD PEOPLE
       Type in the box at the bottom of the people list:
 
-          +353871234567, John
-          @ali_khan, Ali
+          +353871234567, John          (Telegram)
+          @ali_khan, Ali               (Telegram)
+          john@example.com, John       (email)
 
       Press Add person, or just hit Enter.
       The name after the comma is optional.
+
+      If one person should get BOTH a Telegram message and
+      an email, type them together in one go:
+
+          +353871234567, John, john@example.com
+
+      and it adds both for you.
+
+      In the list, a T at the front means Telegram and an @
+      means email, so you can see at a glance who is who.
 
       You can also paste several at once separated by
       semicolons, or use:
@@ -168,15 +179,17 @@ WHAT IT DOES
 
   BOX 2 — WHO GETS IT
 
-    One person per line, either:
+    One person per line, any of:
 
         @their_username
         +353871234567
+        their@email.com
 
     You can add their name after a comma so {name} works:
 
         @john_doe, John
         +353871234567, Mary
+        mary@example.com, Mary
 
     Or click "Load from a file…" and pick a file you
     already have.
@@ -193,6 +206,84 @@ WHAT IT DOES
 
     Leave the window open while it works.
     You can press STOP any time.
+
+
+--------------------------------------------------------
+  SENDING EMAIL
+--------------------------------------------------------
+
+  The same window sends email too. Same groups, same
+  message box, same {name}. You just tick Email.
+
+  SETTING IT UP - ONCE ONLY
+
+    1. Click "Email settings..." beside the Message box.
+    2. Type your own email address.
+       The mail server fills itself in for you.
+    3. Type your password (see the next bit - Gmail needs
+       a special one).
+    4. Click "Send myself a test email".
+       If it says Success, check your inbox. Done.
+
+  THE PASSWORD - THE ONE FIDDLY BIT
+
+    Gmail, Outlook, Yahoo and iCloud will NOT accept your
+    normal password from another program. They want a
+    16-letter "App Password". This is normal and safe.
+
+    To get one for Gmail:
+
+      1. In Email settings, click the small "?" button.
+         It opens the right page for you.
+      2. If it asks, turn on 2-step verification first.
+      3. Where it says "App name" type anything, e.g.
+         "Sender", and click Create.
+      4. It shows you 16 letters. Copy them.
+      5. Paste them into the Password box here.
+
+    That is it. You never have to do it again.
+
+  SENDING
+
+    1. Put people in a group as  john@example.com, John
+    2. Type your message, using {name} if you like.
+    3. Type a Subject - this is the line they see in
+       their inbox before they open it.
+    4. Tick Email at the top right of the Message box.
+       (Tick Telegram as well if you want both.)
+    5. Press SEND.
+
+    Each person gets their own separate email with their
+    own name in it. Nobody sees anyone else's address.
+
+  ONE EMAIL TO EVERYONE
+
+    If you pick "one message everyone sees", everybody
+    gets the same email at once, with all the addresses
+    hidden from each other.
+
+    {name} does not work that way - everyone gets the
+    exact same words.
+
+  HOW MANY EMAILS
+
+    200 a day to start with, which you can change in
+    Email settings. Most providers allow between 300 and
+    500 a day, so do not raise it past that.
+
+    Email has none of Telegram's stranger limits. It does
+    not touch your Telegram numbers at all, and your
+    Telegram numbers do not touch it.
+
+  THE OPT-OUT LINE
+
+    A short line goes at the bottom of every email letting
+    people ask to come off the list. You can change the
+    wording, or turn it off, in Email settings.
+
+    Please leave it on. It is required in Ireland, and it
+    is also what stops people pressing "spam" - which is
+    the thing that actually gets an email address blocked.
 
 
 --------------------------------------------------------
@@ -341,6 +432,30 @@ WHAT IT DOES
   "cannot receive messages from you"
       Their own privacy setting, or they blocked you.
       Nothing you can do.
+
+  EMAIL — "your address or password was not accepted"
+      Almost always the App Password. Your normal email
+      password will not work from another program. Open
+      Email settings, press the "?" button, and follow
+      the four steps. Nothing is wrong with your account.
+
+  EMAIL — "your provider has reached its limit for today"
+      Nothing is lost. Open this tomorrow and it carries
+      on from exactly where it stopped.
+
+  EMAIL — "the mail server refused this message"
+      Your email looked like spam to them. Try shorter
+      text with fewer links.
+
+  EMAIL — "could not find the mail server"
+      Check your internet, then check the Mail server box
+      in Email settings is spelled correctly.
+
+  ANYTHING ELSE
+      Press "Why is nothing sending?" on the main screen.
+      It checks everything and tells you the reason in
+      plain words. If it still makes no sense, send me a
+      screenshot of it.
 
 
 --------------------------------------------------------

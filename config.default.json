@@ -31,5 +31,16 @@
   "check_spambot_before_run": true,
   "abort_on_peer_flood": true,
   "use_warmup": true,
-  "brand_new_setting": "hello"
+
+  "_comment_email": "Email goes out through your own mailbox. NEVER put a real address or password in this file - it is shared through git. The window writes them to your own private config.json instead.",
+  "email_smtp_port": 587,
+  "email_use_tls": true,
+  "_comment_email_pace": "Email is far less risky than Telegram, but providers still throttle. Change these in the window under 'Email settings'.",
+  "email_delay_min": 20,
+  "email_delay_max": 60,
+  "email_daily_cap": 200,
+  "_comment_email_bcc": "How many addresses share one message when sending 'one message everyone sees'. Gmail refuses roughly 100+ on a single message.",
+  "email_bcc_batch": 40,
+  "_comment_unsubscribe": "Required in Ireland and the EU, and it stops people pressing 'spam' - which is what actually gets an address blocked.",
+  "email_unsubscribe": true
 }

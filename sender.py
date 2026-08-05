@@ -156,6 +156,34 @@ DEFAULT_CONFIG = {
     "simulate_typing": True,
     "abort_on_peer_flood": True,
     "use_warmup": True,
+
+    # ------------------------------------------------------------ email
+    # Sending email uses the user's own mailbox over SMTP. Nothing here is
+    # filled in by us — the window asks for it and writes it to config.json,
+    # which is git-ignored. Never put a real address or password in
+    # config.default.json: that file is tracked by git.
+    "email_address": "",
+    "email_password": "",
+    "email_from_name": "",
+    "email_smtp_host": "",
+    "email_smtp_port": 587,
+    "email_use_tls": True,
+    # Email is far less risky than Telegram, but providers still throttle.
+    # 20-60s keeps a normal mailbox comfortably under every provider's radar.
+    "email_delay_min": 20,
+    "email_delay_max": 60,
+    "email_daily_cap": 200,
+    # How many addresses share one message when sending "to everyone".
+    # Gmail rejects roughly 100+ recipients on a single message.
+    "email_bcc_batch": 40,
+    "email_unsubscribe": True,
+    "email_unsubscribe_text": (
+        "If you would rather not receive these, just reply with the word "
+        "STOP and I will take you off the list."),
+
+    # Lets someone reach the dashboard without a Telegram login — needed for
+    # email-only use, and as the way back in if a Telegram session expires.
+    "skip_telegram": False,
 }
 
 
@@ -243,7 +271,9 @@ def load_config():
 
 
 # Keys that belong to this one machine and must always be kept locally.
-ALWAYS_SAVE = ("api_id", "api_hash", "session_name", "last_phone")
+ALWAYS_SAVE = ("api_id", "api_hash", "session_name", "last_phone",
+               "email_address", "email_password", "email_from_name",
+               "email_smtp_host", "email_smtp_port")
 
 
 def save_config(cfg):
@@ -433,15 +463,21 @@ def get_project(data, name):
     p.setdefault("attachment", "")
     p.setdefault("mode", "private")
     p.setdefault("post_group", None)
+    p.setdefault("subject", "")
+    # Which channels this group sends on. None means "never chosen" so the
+    # window can fall back to a sensible default for what is in the list.
+    p.setdefault("channels", None)
     return p
 
 
 def set_project(data, name, message, recipients, attachment="",
-                mode="private", post_group=None):
+                mode="private", post_group=None, subject="", channels=None):
     data["projects"][name] = {"message": message, "recipients": recipients,
                               "attachment": attachment or "",
                               "mode": mode or "private",
-                              "post_group": post_group}
+                              "post_group": post_group,
+                              "subject": subject or "",
+                              "channels": channels}
     data["current"] = name
     save_projects(data)
 
@@ -540,6 +576,28 @@ def is_known(target, known):
     if t.isdigit():
         return int(t) in ids or t in phones
     return t in usernames
+
+
+# An email address is just another kind of target, so a person can be written
+# as "john@example.com, John" in exactly the same list as "@ali, Ali". Nothing
+# about how people are stored had to change to support email.
+EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[A-Za-z]{2,}$")
+
+
+def is_email(target):
+    return bool(EMAIL_RE.match(str(target).strip()))
+
+
+def split_channels(recipients):
+    """[(target, name)] -> (telegram_people, email_people). Order kept.
+
+    Telegram must never be handed an email address: get_entity() would fail on
+    it, and five failures in a row abort the whole run.
+    """
+    tg, em = [], []
+    for t, n in recipients:
+        (em if is_email(t) else tg).append((t, n))
+    return tg, em
 
 
 def parse_hhmm(s):

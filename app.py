@@ -16,6 +16,7 @@ import webbrowser
 from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
 
 import sender as S
+import mailer as M
 
 # Telegram Desktop's light palette
 BG = "#f0f2f5"
@@ -100,10 +101,19 @@ class App:
         self.post_group = None
         self.members = []          # [(target, name)] for the current group
         self.save_failed = False
+        self.tg_ready = False      # only true once Telegram is really logged in
+        self.email_plan = None
+        self.legs_left = 0         # how many channels are still sending
+        self.leg_results = []
 
         root.title("Telegram Sender")
-        root.geometry("1120x780")
-        root.minsize(960, 660)
+        # Tall enough that the settings row and the log are both on screen on a
+        # normal laptop. Everything still fits down to the minimum size.
+        # Fit the screen we are actually on. A fixed size taller than the
+        # laptop screen would push the SEND button off the bottom.
+        root.geometry(f"{min(1120, root.winfo_screenwidth() - 60)}"
+                      f"x{min(860, root.winfo_screenheight() - 90)}")
+        root.minsize(900, 600)
         root.configure(bg=BG)
 
         self._header()
@@ -116,11 +126,15 @@ class App:
         self.root.after(2000, self._heartbeat)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        if not S.config_ready(self.cfg):
-            self.show_setup("Let's connect your Telegram account. One time only.")
-        else:
+        if S.config_ready(self.cfg):
             self.show_setup("Connecting to Telegram…")
             self._try_connect()
+        elif self.cfg.get("skip_telegram"):
+            # email-only, or a Telegram login that has expired: never leave
+            # anyone stranded on the login screen away from their lists
+            self.show_main()
+        else:
+            self.show_setup("Let's connect your Telegram account. One time only.")
 
     def emit(self, kind, **data):
         self.q.put((kind, data))
@@ -135,6 +149,14 @@ class App:
                  font=F(15, True)).pack(side="left", padx=18)
         self.who = tk.Label(h, text="", bg=ACCENT, fg="#d9ecff", font=F(10))
         self.who.pack(side="right", padx=18)
+        # The way back in when Telegram is not connected — without this an
+        # expired login leaves you stuck on the setup screen.
+        self.b_connect_tg = tk.Button(
+            h, text="Connect Telegram", command=lambda: self.show_setup(
+                "Let's connect your Telegram account."),
+            bg=ACCENT, fg="white", font=F(10, True), relief="flat", bd=0,
+            cursor="hand2", padx=12, activeforeground="white",
+            activebackground=ACCENT_DARK, highlightthickness=0)
 
     # ================================================================ setup
 
@@ -188,10 +210,35 @@ class App:
                                    activebackground=GREEN_DARK,
                                    activeforeground="white",
                                    command=self._on_connect)
-        self.b_connect.pack(anchor="w", padx=24, pady=(6, 22))
+        self.b_connect.pack(anchor="w", padx=24, pady=(6, 6))
+
+        flat_btn(wrap, "Skip — I only want to send email", self._on_skip_tg,
+                 pad=6).pack(anchor="w", padx=24, pady=(0, 18))
+
         self.setup_status = tk.Label(self.setup, text="", bg=BG, fg=MUTED,
                                      wraplength=860, justify="left", font=F(11))
         self.setup_status.pack(anchor="w", padx=44)
+
+    def _on_skip_tg(self):
+        self.cfg["skip_telegram"] = True
+        try:
+            S.save_config(self.cfg)
+        except S.SaveError:
+            pass
+        self.show_main()
+        self.log("Telegram is not connected. Email sending works without it — "
+                 "press \"Connect Telegram\" at the top any time.", "warn")
+
+    def _need_telegram(self):
+        """True if Telegram is usable. Explains itself if not."""
+        if self.tg_ready and self.backend.sender is not None:
+            return True
+        messagebox.showinfo(
+            "Telegram is not connected",
+            "This part needs your Telegram account.\n\nPress \"Connect "
+            "Telegram\" at the top right to log in.\n\nSending email works "
+            "without it.")
+        return False
 
     def _field(self, parent, row, label, width, value):
         tk.Label(parent, text=label, bg=PANEL, fg=MUTED, width=14, anchor="w",
@@ -259,6 +306,7 @@ class App:
     def _after_connect(self, res):
         st = res["state"]
         if st == "ready":
+            self.tg_ready = True
             self.who.config(text=f"Sending as {res['name']}"
                             + (f"  ·  @{res['username']}"
                                if res.get("username") else ""))
@@ -350,8 +398,38 @@ class App:
                  self._on_new_campaign).pack(side="right")
         tk.Frame(right, bg=LINE, height=1).pack(fill="x")
 
-        mid = tk.Frame(right, bg=BG)
-        mid.pack(fill="both", expand=True, padx=14, pady=12)
+        # Everything below scrolls if the screen is too short for it. On a
+        # small laptop the settings row used to fall off the bottom with no
+        # way to reach it.
+        holder = tk.Frame(right, bg=BG)
+        holder.pack(fill="both", expand=True)
+        canvas = tk.Canvas(holder, bg=BG, highlightthickness=0, bd=0)
+        canvas.pack(side="left", fill="both", expand=True, padx=(14, 0),
+                    pady=12)
+        self.mid_bar = ttk.Scrollbar(holder, orient="vertical",
+                                     command=canvas.yview)
+        canvas.configure(yscrollcommand=self._mid_scrolled)
+        self.mid_canvas = canvas
+
+        mid = tk.Frame(canvas, bg=BG)
+        self._mid_window = canvas.create_window((0, 0), window=mid,
+                                                anchor="nw")
+
+        def _fit(_=None):
+            canvas.itemconfigure(self._mid_window,
+                                 width=canvas.winfo_width() - 14)
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        mid.bind("<Configure>", _fit)
+        canvas.bind("<Configure>", _fit)
+
+        def _wheel(e):
+            step = -1 if getattr(e, "delta", 0) > 0 or e.num == 4 else 1
+            canvas.yview_scroll(step, "units")
+
+        # Windows and Mac send <MouseWheel>; X11 sends buttons 4 and 5.
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.root.bind_all(seq, _wheel)
 
         # -------- people in this group
         pc = tk.Frame(mid, bg=PANEL, highlightbackground=LINE,
@@ -375,7 +453,7 @@ class App:
             ml, font=(MONO, 10), relief="flat", bd=0, highlightthickness=1,
             highlightbackground=LINE, activestyle="none", bg="#fbfbfc", fg=TEXT,
             selectmode="extended", selectbackground=ACCENT,
-            selectforeground="white", exportselection=False, height=7)
+            selectforeground="white", exportselection=False, height=4)
         self.lst_members.pack(side="left", fill="both", expand=True)
         msb = tk.Scrollbar(ml, command=self.lst_members.yview, width=10)
         msb.pack(side="right", fill="y")
@@ -401,8 +479,30 @@ class App:
         cc = tk.Frame(mid, bg=PANEL, highlightbackground=LINE,
                       highlightthickness=1)
         cc.pack(fill="x", pady=(12, 0))
-        tk.Label(cc, text="Message", bg=PANEL, fg=TEXT,
-                 font=F(11, True)).pack(anchor="w", padx=12, pady=(10, 2))
+
+        # The heading row doubles as the channel picker, so choosing where the
+        # message goes costs no extra height on a small laptop screen.
+        chan = self.chan_row = tk.Frame(cc, bg=PANEL)
+        chan.pack(fill="x", padx=12, pady=(10, 2))
+        tk.Label(chan, text="Message", bg=PANEL, fg=TEXT,
+                 font=F(11, True)).pack(side="left")
+        flat_btn(chan, "Email settings…", self._on_email_settings,
+                 pad=6).pack(side="right")
+        self.lbl_chan = tk.Label(chan, text="", bg=PANEL, fg=MUTED, font=F(9))
+        self.lbl_chan.pack(side="right", padx=8)
+        self.v_tg = tk.BooleanVar(value=True)
+        self.v_email = tk.BooleanVar(value=False)
+        tk.Checkbutton(chan, text="Email", variable=self.v_email, bg=PANEL,
+                       font=F(10), selectcolor=PANEL, activebackground=PANEL,
+                       command=self._on_channel_change).pack(side="right",
+                                                             padx=4)
+        tk.Checkbutton(chan, text="Telegram", variable=self.v_tg, bg=PANEL,
+                       font=F(10), selectcolor=PANEL, activebackground=PANEL,
+                       command=self._on_channel_change).pack(side="right",
+                                                             padx=4)
+        tk.Label(chan, text="Send by", bg=PANEL, fg=TEXT,
+                 font=F(10, True)).pack(side="right", padx=(0, 4))
+
         tk.Label(cc, text="Type it once. Optional: {name} becomes their first "
                           "name.", bg=PANEL, fg=MUTED,
                  font=F(9)).pack(anchor="w", padx=12)
@@ -413,8 +513,20 @@ class App:
         self.t_msg.pack(fill="x", padx=12, pady=(6, 8))
         self.t_msg.bind("<KeyRelease>", lambda e: self._refresh_msg_label())
 
-        # ---- how to send: privately to each person, or one post in a group
-        mode = tk.Frame(cc, bg=PANEL)
+        # ---- subject: only an email needs one, so it only shows for email
+        self.subj_row = tk.Frame(cc, bg=PANEL)
+        tk.Label(self.subj_row, text="Subject", bg=PANEL, fg=TEXT,
+                 font=F(10, True)).pack(side="left")
+        self.e_subject = tk.Entry(self.subj_row, font=F(11), relief="flat",
+                                  bg="#fbfbfc", highlightthickness=1,
+                                  highlightbackground=LINE,
+                                  highlightcolor=ACCENT)
+        self.e_subject.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        tk.Label(self.subj_row, text="  (the line they see in their inbox)",
+                 bg=PANEL, fg=MUTED, font=F(9)).pack(side="left")
+
+        # ---- how to send: privately to each person, or one for everyone
+        mode = self.mode_row = tk.Frame(cc, bg=PANEL)
         mode.pack(fill="x", padx=12, pady=(2, 6))
         self.v_mode = tk.StringVar(value="private")
         tk.Label(mode, text="Send as", bg=PANEL, fg=TEXT,
@@ -423,7 +535,7 @@ class App:
                        variable=self.v_mode, value="private", bg=PANEL,
                        font=F(10), selectcolor=PANEL, activebackground=PANEL,
                        command=self._on_mode_change).pack(side="left", padx=(8, 4))
-        tk.Radiobutton(mode, text="one post in a Telegram group",
+        tk.Radiobutton(mode, text="one message everyone sees",
                        variable=self.v_mode, value="group", bg=PANEL,
                        font=F(10), selectcolor=PANEL, activebackground=PANEL,
                        command=self._on_mode_change).pack(side="left", padx=4)
@@ -551,7 +663,7 @@ class App:
                                    anchor="w", font=F(10))
         self.lbl_status.pack(fill="x", pady=(4, 4))
         self.t_log = scrolledtext.ScrolledText(
-            st, height=6, wrap="word", font=(MONO, 9), state="disabled",
+            st, height=4, wrap="word", font=(MONO, 9), state="disabled",
             relief="flat", bg="#fbfbfc", highlightthickness=1,
             highlightbackground=LINE)
         self.t_log.pack(fill="both", expand=True)
@@ -569,10 +681,228 @@ class App:
         e.bind("<FocusOut>", lambda ev: self._apply_settings())
         return e
 
+    def _mid_scrolled(self, first, last):
+        """Only show the scroll bar when there is something to scroll to."""
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self.mid_bar.pack_forget()
+        else:
+            self.mid_bar.pack(side="right", fill="y", pady=12)
+        self.mid_bar.set(first, last)
+
     def _settings_hint(self):
         self.lbl_settings.config(
             text="Change any of these whenever you like — it takes effect "
                  "straight away, even in the middle of a send.", fg=MUTED)
+
+    # ------------------------------------------------------- email settings
+
+    def _on_email_settings(self):
+        """Everything about email, in one box, in plain words."""
+        win = tk.Toplevel(self.root)
+        win.title("Email settings")
+        win.geometry("640x610")
+        win.configure(bg=PANEL)
+        win.transient(self.root)
+
+        tk.Label(win, text="Sending email from your own address", bg=PANEL,
+                 fg=TEXT, font=F(14, True)).pack(anchor="w", padx=20,
+                                                 pady=(18, 2))
+        tk.Label(win, text="Your emails go out from your own mailbox, so there "
+                           "is nothing to pay and no account to sign up for.",
+                 bg=PANEL, fg=MUTED, font=F(10), wraplength=580,
+                 justify="left").pack(anchor="w", padx=20, pady=(0, 12))
+
+        form = tk.Frame(win, bg=PANEL)
+        form.pack(fill="x", padx=20)
+        rows = {}
+
+        def row(r, label, value, show=None, width=34):
+            tk.Label(form, text=label, bg=PANEL, fg=TEXT,
+                     font=F(10)).grid(row=r, column=0, sticky="e", pady=5,
+                                      padx=(0, 10))
+            e = tk.Entry(form, width=width, font=F(11), relief="flat",
+                         bg="#f5f6f7", highlightthickness=1,
+                         highlightbackground=LINE, highlightcolor=ACCENT,
+                         show=show)
+            e.insert(0, str(value))
+            e.grid(row=r, column=1, sticky="w", pady=5, ipady=4)
+            return e
+
+        rows["addr"] = row(0, "Your email address", self.cfg.get(
+            "email_address", ""))
+        rows["pwd"] = row(1, "Password", self.cfg.get("email_password", ""),
+                          show="•")
+
+        help_row = tk.Frame(form, bg=PANEL)
+        help_row.grid(row=2, column=1, sticky="w")
+        tk.Label(help_row, text="Gmail, Outlook, Yahoo and iCloud need an "
+                                "\"App Password\", not your normal one.",
+                 bg=PANEL, fg=WARN, font=F(9), wraplength=380,
+                 justify="left").pack(side="left")
+
+        def open_app_pw():
+            webbrowser.open(M.app_password_url(rows["addr"].get().strip()))
+            self.log("Opened the App Password page in your browser.", "info")
+
+        flat_btn(help_row, "?", open_app_pw, pad=6).pack(side="left", padx=4)
+
+        rows["from"] = row(3, "Your name on the email",
+                           self.cfg.get("email_from_name", ""))
+        rows["host"] = row(4, "Mail server", self.cfg.get("email_smtp_host",
+                                                          ""))
+        rows["port"] = row(5, "Port", self.cfg.get("email_smtp_port", 587),
+                           width=8)
+
+        lbl_guess = tk.Label(form, text="", bg=PANEL, fg=GOOD, font=F(9))
+        lbl_guess.grid(row=6, column=1, sticky="w")
+
+        def autofill(_=None):
+            """Fill the server in for them the moment they type the address."""
+            g = M.guess_smtp(rows["addr"].get().strip())
+            if not g:
+                if rows["addr"].get().strip():
+                    lbl_guess.config(
+                        text="I do not know this provider — ask them for their "
+                             "outgoing mail server.", fg=WARN)
+                return
+            if not rows["host"].get().strip():
+                rows["host"].delete(0, "end")
+                rows["host"].insert(0, g[0])
+                rows["port"].delete(0, "end")
+                rows["port"].insert(0, str(g[1]))
+            lbl_guess.config(text=f"Filled in for you: {g[0]}", fg=GOOD)
+
+        rows["addr"].bind("<FocusOut>", autofill)
+        rows["addr"].bind("<Return>", autofill)
+
+        tk.Frame(win, bg=LINE, height=1).pack(fill="x", padx=20, pady=14)
+
+        pace = tk.Frame(win, bg=PANEL)
+        pace.pack(fill="x", padx=20)
+        tk.Label(pace, text="Gap between emails", bg=PANEL, fg=TEXT,
+                 font=F(10)).pack(side="left")
+        e_dmin = self._plain_entry(pace, self.cfg.get("email_delay_min", 20))
+        tk.Label(pace, text="to", bg=PANEL, fg=MUTED, font=F(10)).pack(
+            side="left")
+        e_dmax = self._plain_entry(pace, self.cfg.get("email_delay_max", 60))
+        tk.Label(pace, text="seconds      Most per day", bg=PANEL, fg=TEXT,
+                 font=F(10)).pack(side="left", padx=(4, 0))
+        e_cap = self._plain_entry(pace, self.cfg.get("email_daily_cap", 200))
+
+        unsub = tk.Frame(win, bg=PANEL)
+        unsub.pack(fill="x", padx=20, pady=(14, 4))
+        v_unsub = tk.BooleanVar(value=bool(self.cfg.get("email_unsubscribe",
+                                                        True)))
+        tk.Checkbutton(unsub, text="Put a line at the bottom letting people "
+                                   "opt out  (required in Ireland)",
+                       variable=v_unsub, bg=PANEL, font=F(10),
+                       selectcolor=PANEL,
+                       activebackground=PANEL).pack(anchor="w")
+        e_unsub = tk.Entry(win, font=F(10), relief="flat", bg="#f5f6f7",
+                           highlightthickness=1, highlightbackground=LINE)
+        e_unsub.insert(0, self.cfg.get("email_unsubscribe_text", ""))
+        e_unsub.pack(fill="x", padx=20, ipady=4)
+        tk.Label(win, text="It also stops people pressing \"spam\", which is "
+                           "what gets an email address blocked.",
+                 bg=PANEL, fg=MUTED, font=F(9)).pack(anchor="w", padx=20,
+                                                     pady=(3, 0))
+
+        status = tk.Label(win, text="", bg=PANEL, fg=MUTED, font=F(10),
+                          wraplength=580, justify="left")
+        status.pack(anchor="w", padx=20, pady=(12, 0))
+
+        def collect():
+            try:
+                port = int(rows["port"].get().strip() or 587)
+                dmin = float(e_dmin.get().strip())
+                dmax = float(e_dmax.get().strip())
+                cap = int(e_cap.get().strip())
+                if dmin < 0 or dmax < dmin or cap < 1:
+                    raise ValueError
+            except ValueError:
+                status.config(text="The port, the gap and the daily most must "
+                                   "be numbers, and the second gap cannot be "
+                                   "smaller than the first.", fg=BAD)
+                return None
+            return {
+                "email_address": rows["addr"].get().strip(),
+                "email_password": rows["pwd"].get(),
+                "email_from_name": rows["from"].get().strip(),
+                "email_smtp_host": rows["host"].get().strip(),
+                "email_smtp_port": port,
+                "email_use_tls": port != 465,
+                "email_delay_min": dmin,
+                "email_delay_max": dmax,
+                "email_daily_cap": cap,
+                "email_unsubscribe": bool(v_unsub.get()),
+                "email_unsubscribe_text": e_unsub.get().strip(),
+            }
+
+        def save(quiet=False):
+            got = collect()
+            if got is None:
+                return False
+            if got["email_address"] and not got["email_smtp_host"]:
+                g = M.guess_smtp(got["email_address"])
+                if g:
+                    got["email_smtp_host"], got["email_smtp_port"] = g[0], g[1]
+                    got["email_use_tls"] = g[2]
+            self.cfg.update(got)      # same dict a running send is holding
+            try:
+                S.save_config(self.cfg)
+            except S.SaveError as e:
+                status.config(text=f"Could not save: {e}", fg=BAD)
+                return False
+            if not quiet:
+                status.config(text="Saved.", fg=GOOD)
+            self._refresh_mode()
+            return True
+
+        def test():
+            if not save(quiet=True):
+                return
+            addr = self.cfg.get("email_address", "")
+            if not addr:
+                status.config(text="Fill in your email address first.", fg=BAD)
+                return
+            status.config(text="Trying to log in and send you a test email…",
+                          fg=MUTED)
+            win.update_idletasks()
+
+            def done(res):
+                ok, message = res
+                status.config(text=message, fg=GOOD if ok else BAD)
+                self.log(("Email test: " if ok else "Email test failed: ")
+                         + message.splitlines()[0], "good" if ok else "bad")
+                if not ok:
+                    messagebox.showerror("Email is not working yet", message)
+
+            self.backend.submit(
+                M.EmailSender(self.cfg, self.emit).test_connection(addr),
+                done, lambda e: status.config(text=str(e), fg=BAD))
+
+        btns = tk.Frame(win, bg=PANEL)
+        btns.pack(fill="x", padx=20, pady=16, side="bottom")
+        tk.Button(btns, text="Send myself a test email", command=test,
+                  bg=ACCENT, fg="white", font=F(11, True), relief="flat",
+                  bd=0, cursor="hand2", padx=18, pady=7,
+                  activeforeground="white").pack(side="left")
+        tk.Button(btns, text="Save and close",
+                  command=lambda: save() and win.destroy(), bg=GREEN,
+                  fg="white", font=F(11, True), relief="flat", bd=0,
+                  cursor="hand2", padx=18, pady=7,
+                  activeforeground="white").pack(side="right")
+        flat_btn(btns, "Cancel", win.destroy, pad=8).pack(side="right", padx=8)
+
+        autofill()
+
+    def _plain_entry(self, parent, value, width=6):
+        e = tk.Entry(parent, width=width, font=F(10), relief="flat",
+                     justify="center", bg="#f5f6f7", highlightthickness=1,
+                     highlightbackground=LINE, highlightcolor=ACCENT)
+        e.insert(0, str(value))
+        e.pack(side="left", padx=5, ipady=3)
+        return e
 
     def _apply_settings(self, _=None):
         """Validate and apply the dashboard settings immediately."""
@@ -717,17 +1047,61 @@ class App:
         """Plain-English answer to 'why has nothing gone out?'"""
         issues, fine = [], []
 
-        if self.v_mode.get() == "group":
+        want_tg, want_em = bool(self.v_tg.get()), bool(self.v_email.get())
+        tg_people, em_people = S.split_channels(self.members)
+        group_mode = self.v_mode.get() == "group"
+
+        # ---- which channels
+        if not (want_tg or want_em):
+            issues.append("Neither Telegram nor Email is ticked next to "
+                          "\"Send by\", so there is nowhere for it to go.")
+        if want_tg and not self.tg_ready:
+            issues.append("Telegram is ticked but your Telegram account is not "
+                          "connected. Press \"Connect Telegram\" at the top "
+                          "right.")
+        if want_tg and group_mode:
             if self.post_group:
-                fine.append(f"Set to post once into \"{self.post_group['title']}\" "
-                            f"— not private messages.")
+                fine.append(f"Set to post once into "
+                            f"\"{self.post_group['title']}\" — not private "
+                            f"messages.")
             else:
-                issues.append("You picked \"one post in a Telegram group\" but "
-                              "have not chosen which group. Click "
+                issues.append("You picked \"one message everyone sees\" but "
+                              "have not chosen which Telegram group. Click "
                               "\"Choose group…\".")
+
+        # ---- email setup
+        if want_em:
+            if not (self.cfg.get("email_address") or "").strip():
+                issues.append("Email is ticked but your email address is not "
+                              "filled in. Press \"Email settings…\".")
+            elif not (self.cfg.get("email_password") or ""):
+                issues.append("Email is ticked but the password is not filled "
+                              "in. Press \"Email settings…\". Gmail, Outlook, "
+                              "Yahoo and iCloud need an App Password, not your "
+                              "normal one.")
+            else:
+                fine.append(f"Emails will come from "
+                            f"{self.cfg['email_address']}.")
+            if not self.e_subject.get().strip():
+                issues.append("Emails need a subject line. Type one in the "
+                              "Subject box.")
+            if not em_people:
+                issues.append(f"Email is ticked but nobody in "
+                              f"\"{self.current}\" has an email address. Add "
+                              f"them as:  john@example.com, John")
+            else:
+                fine.append(f"{len(em_people)} people have an email address.")
+
+        if want_tg and not tg_people and not group_mode:
+            issues.append(f"Telegram is ticked but nobody in "
+                          f"\"{self.current}\" has a phone number or username. "
+                          f"Add them as:  +353871234567, John")
+        elif want_tg and tg_people:
+            fine.append(f"{len(tg_people)} people can be reached on Telegram.")
+
         if not S.parse_message_variants(self.t_msg.get("1.0", "end")):
             issues.append("No message typed yet.")
-        if self.v_mode.get() == "private" and not self.members:
+        if not group_mode and not self.members:
             issues.append(f"There is nobody in \"{self.current}\". Add people "
                           f"with the box under the list.")
         if self.attachment and not os.path.exists(self.attachment):
@@ -764,20 +1138,39 @@ class App:
                           "may not be kept.")
 
         k, n = S.sent_today(self.state)
+        e_today = M.email_sent_today(self.state)
         ceil = S.warmup_ceiling(self.state, self.cfg)
-        fine.append(f"Sent today: {k} to people you know, {n} to new people.")
-        if ceil is not None and (k + n) >= ceil:
-            issues.append(f"Today's first-week limit of {ceil} messages is used "
-                          f"up. It rises tomorrow, or untick \"First-week "
-                          f"warm-up\" above.")
-        if n >= self.cfg.get("daily_cap_new", 15):
-            issues.append(f"Today's limit for NEW people "
-                          f"({self.cfg['daily_cap_new']}) is used up. People "
-                          f"already in your contacts are not affected.")
+        fine.append(f"Sent today: {k} Telegram to people you know, {n} Telegram "
+                    f"to new people, {e_today} emails.")
 
+        if want_tg:
+            if ceil is not None and (k + n) >= ceil:
+                issues.append(f"Today's first-week Telegram limit of {ceil} "
+                              f"messages is used up. It rises tomorrow, or "
+                              f"untick \"First-week warm-up\" above. Email is "
+                              f"not affected by this.")
+            if n >= self.cfg.get("daily_cap_new", 15):
+                issues.append(f"Today's Telegram limit for NEW people "
+                              f"({self.cfg['daily_cap_new']}) is used up. "
+                              f"People already in your contacts, and email, "
+                              f"are not affected.")
+        if want_em:
+            cap = self.cfg.get("email_daily_cap", 200)
+            if e_today >= cap:
+                issues.append(f"Today's email limit ({cap}) is used up. It "
+                              f"starts again at midnight and nothing is lost. "
+                              f"You can raise it in \"Email settings…\".")
+
+        # Who is left, counted per channel — a person can be in this group
+        # twice, once for Telegram and once for email.
         ps = S.project_state(self.state, self.current)
-        if self.members and len(ps["sent"]) >= len(self.members):
-            issues.append(f"All {len(ps['sent'])} people in "
+        if want_tg and tg_people and all(t in ps["sent"] for t, _ in tg_people):
+            issues.append(f"All {len(tg_people)} Telegram people in "
+                          f"\"{self.current}\" already received a message. "
+                          f"Press SEND and say yes when it offers to send the "
+                          f"new message to them again.")
+        if want_em and em_people and all(t in ps["sent"] for t, _ in em_people):
+            issues.append(f"All {len(em_people)} email people in "
                           f"\"{self.current}\" already received a message. "
                           f"Press SEND and say yes when it offers to send the "
                           f"new message to them again.")
@@ -819,18 +1212,29 @@ class App:
         self.main.pack(fill="both", expand=True)
         self._reload_groups()
         self._load_current_project()
-        k, n = S.sent_today(self.state)
-        ceil = S.warmup_ceiling(self.state, self.cfg)
-        self.log(f"Connected. Today so far: {k} to people you know, {n} to new "
-                 f"people.", "info")
-        if ceil is not None:
-            self.log(f"First-week warm-up: up to {ceil} messages today. It "
-                     f"rises daily, then there is no limit for your own "
-                     f"contacts.", "info")
+
+        if self.tg_ready:
+            self.b_connect_tg.pack_forget()
+            k, n = S.sent_today(self.state)
+            ceil = S.warmup_ceiling(self.state, self.cfg)
+            self.log(f"Connected. Today so far: {k} to people you know, {n} to "
+                     f"new people.", "info")
+            if ceil is not None:
+                self.log(f"First-week warm-up: up to {ceil} messages today. It "
+                         f"rises daily, then there is no limit for your own "
+                         f"contacts.", "info")
+            else:
+                self.log(f"No daily limit for people you already know. New "
+                         f"people are capped at "
+                         f"{self.cfg['daily_cap_new']} per day.", "info")
         else:
-            self.log(f"No daily limit for people you already know. New people "
-                     f"are capped at {self.cfg['daily_cap_new']} per day.",
-                     "info")
+            self.b_connect_tg.pack(side="right", padx=10, pady=10)
+            self.who.config(text="Telegram not connected")
+
+        e = M.email_sent_today(self.state)
+        if self.cfg.get("email_address"):
+            self.log(f"Email: {e} sent today, out of "
+                     f"{self.cfg.get('email_daily_cap', 200)}.", "info")
 
     # ============================================================== groups
 
@@ -877,6 +1281,21 @@ class App:
         self.attachment = p.get("attachment", "") or ""
         self.post_group = p.get("post_group") or None
         self.v_mode.set(p.get("mode", "private"))
+        self.e_subject.delete(0, "end")
+        self.e_subject.insert(0, p.get("subject", "") or "")
+
+        # A group that has never had its channels chosen picks the sensible
+        # one from who is actually in it.
+        ch = p.get("channels")
+        if isinstance(ch, dict):
+            self.v_tg.set(bool(ch.get("telegram", True)))
+            self.v_email.set(bool(ch.get("email", False)))
+            if not (self.v_tg.get() or self.v_email.get()):
+                self.v_tg.set(True)
+        else:
+            tg_people, em_people = S.split_channels(self.members)
+            self.v_tg.set(bool(tg_people) or not em_people)
+            self.v_email.set(bool(em_people))
         self._refresh_members()
         self._refresh_mode()
         self._refresh_attach()
@@ -893,7 +1312,10 @@ class App:
             S.set_project(self.projects, self.current,
                           self.t_msg.get("1.0", "end").rstrip() + "\n",
                           self._recipients_text(), self.attachment,
-                          self.v_mode.get(), self.post_group)
+                          self.v_mode.get(), self.post_group,
+                          self.e_subject.get().strip(),
+                          {"telegram": bool(self.v_tg.get()),
+                           "email": bool(self.v_email.get())})
             self.save_failed = False
             return True
         except S.SaveError as e:
@@ -923,8 +1345,14 @@ class App:
     def _refresh_members(self):
         self.lst_members.delete(0, "end")
         for t, n in self.members:
-            self.lst_members.insert("end", f" {t:<22} {n or ''}")
-        self.lbl_gcount.config(text=f"{len(self.members)} people")
+            # a glyph so he can see at a glance who is on which channel
+            tag = "@" if S.is_email(t) else "T"
+            self.lst_members.insert("end", f" {tag}  {t:<30} {n or ''}")
+        tg_people, em_people = S.split_channels(self.members)
+        bits = f"{len(self.members)} people"
+        if tg_people and em_people:
+            bits += f"  ({len(tg_people)} Telegram, {len(em_people)} email)"
+        self.lbl_gcount.config(text=bits)
         self._reload_groups()
         if hasattr(self, "lbl_mode"):
             self._refresh_mode()
@@ -992,16 +1420,58 @@ class App:
 
     # ============================================================== people
 
+    @staticmethod
+    def _parse_add_box(raw):
+        """What was typed -> [(target, name)].
+
+        Handles the everyday two-field form, and also the three-field form
+        "+353871234567, John, john@x.com" which makes BOTH a Telegram entry
+        and an email entry for the one person. parse_recipients only ever
+        splits on the first comma, so the three-field case has to be pulled
+        apart here before it gets there.
+        """
+        out = []
+        for line in raw.replace(";", "\n").split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            bits = [b.strip() for b in line.split(",") if b.strip()]
+            emails = [b for b in bits if S.is_email(b)]
+            others = [b for b in bits if not S.is_email(b)]
+            handles = [b for b in others
+                       if b.startswith(("@", "+")) or b.replace(" ", "").isdigit()]
+            names = [b for b in others if b not in handles]
+
+            if emails:
+                # Whichever way round they typed it, the address is the
+                # address and anything else is the name. "John, john@x.com"
+                # used to create a person called "john@x.com" whose Telegram
+                # handle was "John".
+                name = (names[0] if names else
+                        handles[0] if len(handles) > 1 else None)
+                for h in handles:
+                    out.append((h, name))
+                for e in emails:
+                    out.append((e, name))
+                continue
+            out.extend(S.parse_recipients(line))
+        return out
+
     def _on_add_person(self):
         raw = self.e_add.get().strip()
         if not raw:
-            messagebox.showinfo("Nothing typed",
-                                "Type a phone number or @username, e.g.\n\n"
-                                "+353871234567, John")
+            messagebox.showinfo(
+                "Nothing typed",
+                "Type one of these, then press Add:\n\n"
+                "  +353871234567, John\n"
+                "  @john_murphy, John\n"
+                "  john@example.com, John\n\n"
+                "Or all in one go, and it makes both:\n\n"
+                "  +353871234567, John, john@example.com")
             return
         have = {t.lower().lstrip("@") for t, _ in self.members}
         added = 0
-        for t, n in S.parse_recipients(raw.replace(";", "\n")):
+        for t, n in self._parse_add_box(raw):
             if t.lower().lstrip("@") in have:
                 continue
             self.members.append((t, n))
@@ -1040,9 +1510,38 @@ class App:
                  f"({', '.join(names[:3])}{'…' if len(names) > 3 else ''}).",
                  "warn")
 
+    @staticmethod
+    def _rows_from_file(text):
+        """Read a list out of a file, whichever way round the columns are.
+
+        A contacts export from Outlook or Google is "Name,Email", which the
+        plain reader would turn into a person called "Email". Anything with a
+        header row, or with the name first, is flipped here.
+        """
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        out = []
+        for line in lines:
+            line = line.strip().strip(",")
+            if not line or line.startswith("#"):
+                continue
+            bits = [b.strip().strip('"') for b in line.split(",")]
+            low = [b.lower() for b in bits]
+            if low and low[0] in ("name", "first name", "firstname",
+                                  "email", "e-mail", "email address",
+                                  "phone", "number", "username"):
+                continue                                   # a header row
+            if len(bits) >= 2 and not S.is_email(bits[0]) \
+                    and not bits[0].startswith(("@", "+")) \
+                    and not bits[0].replace(" ", "").isdigit() \
+                    and S.is_email(bits[1]):
+                out.append((bits[1], bits[0] or None))     # Name,Email
+                continue
+            out.extend(S.parse_recipients(line))
+        return out
+
     def _on_load_file(self):
         path = filedialog.askopenfilename(
-            title="Choose a file with usernames or phone numbers",
+            title="Choose a file with emails, usernames or phone numbers",
             filetypes=[("Text or CSV", "*.txt *.csv"), ("All files", "*.*")])
         if not path:
             return
@@ -1054,7 +1553,7 @@ class App:
             return
         have = {t.lower().lstrip("@") for t, _ in self.members}
         added = 0
-        for t, n in S.parse_recipients(text):
+        for t, n in self._rows_from_file(text):
             if t.lower().lstrip("@") in have:
                 continue
             self.members.append((t, n))
@@ -1068,13 +1567,39 @@ class App:
 
     # ---------------------------------------------- private vs group posting
 
+    def _on_channel_change(self):
+        """Telegram and/or Email ticked."""
+        if not (self.v_tg.get() or self.v_email.get()):
+            # Untick both and there is nowhere to send. Put the last one back
+            # rather than letting them sit in an impossible state.
+            self.v_tg.set(True)
+            self.log("Pick at least one — Telegram or Email.", "warn")
+        self._refresh_mode()
+        self._save_current_project()
+        if self.v_email.get() and not self._email_configured():
+            self.log("Email is ticked but not set up yet. Press \"Email "
+                     "settings…\" and fill in your address and password.",
+                     "warn")
+
+    def _email_configured(self):
+        return bool((self.cfg.get("email_address") or "").strip()
+                    and (self.cfg.get("email_password") or ""))
+
     def _on_mode_change(self):
         self._refresh_mode()
         self._save_current_project()
         if self.v_mode.get() == "group":
-            self.log("Mode: ONE post into a Telegram group. Everyone in that "
-                     "group sees it, and everyone sees the replies.", "warn")
-            if not self.post_group:
+            bits = []
+            if self.v_tg.get():
+                bits.append("one post in a Telegram group, where everyone "
+                            "sees it and sees the replies")
+            if self.v_email.get():
+                bits.append("one email to everybody, with the addresses "
+                            "hidden from each other")
+            self.log("Mode: " + " and ".join(bits) + ".", "warn")
+            self.log("{name} cannot be used this way — everyone gets the very "
+                     "same words.", "warn")
+            if self.v_tg.get() and not self.post_group:
                 self._on_pick_post_group()
         else:
             self.log("Mode: a separate private message to each person. Nobody "
@@ -1082,7 +1607,10 @@ class App:
 
     def _refresh_mode(self):
         group = self.v_mode.get() == "group"
-        if group:
+        tg_people, em_people = S.split_channels(self.members)
+
+        # the "choose a Telegram group" button only matters for Telegram
+        if group and self.v_tg.get():
             self.b_pickgroup.pack(side="left", padx=4)
             self.lbl_mode.config(
                 text=(f"→ posts once into \"{self.post_group['title']}\""
@@ -1090,10 +1618,39 @@ class App:
                 fg=GOOD if self.post_group else BAD)
         else:
             self.b_pickgroup.pack_forget()
-            self.lbl_mode.config(text=f"→ {len(self.members)} separate private "
-                                      f"messages", fg=MUTED)
+            if group:
+                self.lbl_mode.config(text=f"→ one email to {len(em_people)} "
+                                          f"people at once", fg=MUTED)
+            else:
+                bits = []
+                if self.v_tg.get():
+                    bits.append(f"{len(tg_people)} on Telegram")
+                if self.v_email.get():
+                    bits.append(f"{len(em_people)} by email")
+                self.lbl_mode.config(text="→ " + " · ".join(bits) if bits
+                                     else "", fg=MUTED)
+
+        # the subject box only appears when it is actually needed
+        if self.v_email.get():
+            self.subj_row.pack(fill="x", padx=12, pady=(2, 4),
+                               before=self.mode_row)
+        else:
+            self.subj_row.pack_forget()
+
+        note = []
+        if self.v_tg.get():
+            note.append(f"{len(tg_people)} with Telegram")
+        if self.v_email.get():
+            note.append(f"{len(em_people)} with an email address")
+        self.lbl_chan.config(
+            text=("  " + " · ".join(note)) if note else "",
+            fg=BAD if (self.v_email.get() and not em_people) or
+                      (self.v_tg.get() and not tg_people and not group)
+            else MUTED)
 
     def _on_pick_post_group(self):
+        if not self._need_telegram():
+            return
         self.log("Reading your Telegram groups…", "info")
 
         def done(groups):
@@ -1145,41 +1702,82 @@ class App:
                             lambda e: self.log(f"Could not read groups: {e}",
                                                "bad"))
 
-    def _send_to_group(self, variants):
-        if not self.post_group:
+    def _send_broadcast(self, variants, em_people):
+        """One message everybody sees: posted in a Telegram group, and/or one
+        email to everyone with the addresses hidden from each other."""
+        want_tg = bool(self.v_tg.get())
+        want_em = bool(self.v_email.get()) and bool(em_people)
+
+        if want_tg and not self.post_group:
             messagebox.showwarning("No group chosen",
                                    "Click \"Choose group…\" and pick which "
                                    "Telegram group to post in.")
             return
-        text = S.render(variants, "")
-        if not messagebox.askyesno(
-                "Post in the group?",
-                f"Post this message once into \"{self.post_group['title']}\"?\n\n"
-                f"Everyone in that group will see it, and everyone will see "
-                f"any replies.\n\nThis is not the private one-to-one sending."):
+        if self.v_email.get() and not em_people:
+            want_em = False
+            self.log("Nobody in this group has an email address.", "warn")
+        if not (want_tg or want_em):
+            messagebox.showinfo("Nothing to send",
+                                "There is nowhere for this to go.")
             return
-        self.b_send.config(state="disabled")
-        self.lbl_status.config(text="Posting…")
 
-        def done(title):
-            self._reset_buttons()
-            S.log_row(self.current, f"group:{self.post_group['title']}", "",
-                      "sent", "posted in group")
+        text = S.render(variants, "")
+        where = []
+        if want_tg:
+            where.append(f"posted once in \"{self.post_group['title']}\", "
+                         f"where everyone in that group sees it")
+        if want_em:
+            where.append(f"emailed to {len(em_people)} people at once, with "
+                         f"their addresses hidden from each other")
+        warn = ("\n\nNote: {name} cannot be used this way — everyone gets the "
+                "exact same words." if "{name}" in text else "")
+        if not messagebox.askyesno(
+                "Send one message to everyone?",
+                "Your message will be:\n\n  · " + "\n  · ".join(where) + warn
+                + "\n\nThis is not the private one-to-one sending."):
+            return
+
+        self.b_send.config(state="disabled")
+        self.b_check.config(state="disabled")
+        self.lbl_status.config(text="Sending…")
+
+        subject = self.e_subject.get().strip()
+        self.running = True
+        self.backend.stop_flag = threading.Event()
+        self.b_stop.config(state="normal")
+        self.legs_left = 1 if want_em else 0
+        self.leg_results = []
+
+        def posted(title):
+            S.log_row(self.current, f"group:{title}", "", "sent",
+                      "posted in group")
             self.lbl_status.config(text=f"Posted in \"{title}\".")
             self.log(f"Posted in the Telegram group \"{title}\". Everyone in "
                      f"it can see it.", "good")
-            messagebox.showinfo("Posted", f"Your message is now in "
-                                          f"\"{title}\".")
+            if not want_em:
+                self.running = False
+                self._reset_buttons()
+                messagebox.showinfo("Posted", f"Your message is now in "
+                                              f"\"{title}\".")
 
         def err(e):
+            self.running = False
             self._reset_buttons()
             self.lbl_status.config(text="Could not post.")
             self.log(f"Could not post: {e}", "bad")
             messagebox.showerror("Could not post", str(e))
 
-        self.backend.submit(
-            self.backend.sender.post_to_group(self.post_group["id"], text,
-                                              self.attachment), done, err)
+        async def go():
+            if want_tg:
+                title = await self.backend.sender.post_to_group(
+                    self.post_group["id"], text, self.attachment)
+                self.emit("_call", fn=posted, arg=title)
+            if want_em and not self.backend.stop_flag.is_set():
+                await M.EmailSender(self.cfg, self.emit).run_bcc(
+                    em_people, variants, self.state, self.current,
+                    self.backend.stop_flag, self.attachment, subject)
+
+        self.backend.submit(go(), on_error=err)
 
     def _on_recover(self):
         """Restore people (and whole groups) from the append-only journal."""
@@ -1255,11 +1853,16 @@ class App:
                     people = S.parse_recipients(p.get("recipients", "")) \
                         + r["missing"]
                     try:
+                        # Pass every field back through. Leaving these out used
+                        # to silently wipe the group's send-mode and subject
+                        # while "recovering" it.
                         S.set_project(
                             self.projects, g, p.get("message", ""),
                             "\n".join(f"{t}, {n}" if n else t
                                       for t, n in people) + "\n",
-                            p.get("attachment", ""))
+                            p.get("attachment", ""), p.get("mode", "private"),
+                            p.get("post_group"), p.get("subject", ""),
+                            p.get("channels"))
                     except S.SaveError as e:
                         self.log(f"Could not save \"{g}\": {e}", "bad")
                         continue
@@ -1285,6 +1888,8 @@ class App:
                   activeforeground="white").pack(side="left", padx=6)
 
     def _on_import_group(self):
+        if not self._need_telegram():
+            return
         self.log("Reading your Telegram groups…", "info")
 
         def done(groups):
@@ -1439,14 +2044,34 @@ class App:
     # ============================================================== actions
 
     def _on_check(self):
+        """Show exactly what would happen, and send nothing."""
         got = self._inputs()
         if not got:
             return
-        variants, recipients = got
+        variants, _ = got
         self._save_current_project()
-        self.b_check.config(state="disabled")
         self.lbl_status.config(text="Checking…")
         self.state = S.load_state()
+        tg_people, em_people = S.split_channels(self.members)
+
+        preview = S.render(variants, (em_people or tg_people or
+                                      [("", "John")])[0][1] or "John")
+
+        if self.v_email.get() and em_people:
+            ep = M.build_email_plan(em_people, self.state, self.current,
+                                    self.cfg)
+            self._show_email_plan(ep, variants)
+            subject = self.e_subject.get().strip()
+            self.log(f"Email subject: {subject or '(none yet — type one)'}",
+                     "info" if subject else "warn")
+
+        if not (self.v_tg.get() and tg_people and self.tg_ready):
+            self.log("This is what one person receives:", "info")
+            self.log("    " + preview.replace("\n", "\n    "), "info")
+            self.lbl_status.config(text="Checked. Nothing was sent.")
+            return
+
+        self.b_check.config(state="disabled")
 
         def done(plan):
             self.b_check.config(state="normal")
@@ -1459,7 +2084,7 @@ class App:
             self.log(f"Check failed: {e}", "bad")
 
         self.backend.submit(self.backend.sender.build_plan(
-            recipients, self.state, self.current), done, err)
+            tg_people, self.state, self.current), done, err)
 
     def _show_plan(self, plan, variants):
         q = len(plan["queue"])
@@ -1490,108 +2115,230 @@ class App:
             self.log("    " + S.render(variants, n or "John").replace(
                 "\n", "\n    "), "info")
 
+    def _channels_ok(self):
+        """Are the ticked channels actually usable? Says why if not."""
+        if not (self.v_tg.get() or self.v_email.get()):
+            messagebox.showwarning(
+                "Where should it go?",
+                "Tick Telegram, Email, or both, next to \"Send by\".")
+            return False
+        if self.v_tg.get() and not self._need_telegram():
+            return False
+        if self.v_email.get():
+            if not self._email_configured():
+                messagebox.showwarning(
+                    "Email is not set up yet",
+                    "Press \"Email settings…\" and fill in your email address "
+                    "and password.\n\nThen press \"Send myself a test email\" "
+                    "to make sure it works before sending to your list.")
+                self._on_email_settings()
+                return False
+            if not self.e_subject.get().strip():
+                messagebox.showwarning(
+                    "Emails need a subject",
+                    "Type a subject in the Subject box — it is the line people "
+                    "see in their inbox before they open it.")
+                self.e_subject.focus_set()
+                return False
+        return True
+
     def _on_send(self):
-        if self.v_mode.get() == "group":
-            v = S.parse_message_variants(self.t_msg.get("1.0", "end"))
-            if not v:
-                messagebox.showwarning("No message", "Type your message first.")
-                return
-            self._send_to_group(v)
+        if not self._channels_ok():
             return
-        got = self._inputs()
-        if not got:
+
+        variants = S.parse_message_variants(self.t_msg.get("1.0", "end"))
+        if not variants:
+            messagebox.showwarning("No message", "Type your message first.")
             return
-        variants, recipients = got
+        if not self.members and self.v_mode.get() != "group":
+            messagebox.showwarning("Nobody in this group",
+                                   "Add at least one person to this group "
+                                   "first.")
+            return
+
         self._save_current_project()
         self.state = S.load_state()
+        tg_people, em_people = S.split_channels(self.members)
+
+        # ---- one message everybody sees
+        if self.v_mode.get() == "group":
+            self._send_broadcast(variants, em_people)
+            return
+
+        # ---- a separate one to each person
+        want_tg, want_em = bool(self.v_tg.get()), bool(self.v_email.get())
+        if want_tg and not tg_people:
+            want_tg = False
+            self.log("Nobody in this group has a Telegram number or username — "
+                     "sending by email only.", "warn")
+        if want_em and not em_people:
+            want_em = False
+            self.log("Nobody in this group has an email address — sending by "
+                     "Telegram only.", "warn")
+        if not (want_tg or want_em):
+            messagebox.showinfo(
+                "Nothing to send",
+                f"Nobody in \"{self.current}\" can be reached the way you have "
+                f"ticked.\n\nAdd people as:\n"
+                f"    +353871234567, John      (Telegram)\n"
+                f"    john@example.com, John   (email)")
+            return
+
+        self.email_plan = (M.build_email_plan(em_people, self.state,
+                                              self.current, self.cfg)
+                           if want_em else None)
+
         self.b_send.config(state="disabled")
         self.b_check.config(state="disabled")
         self.lbl_status.config(text="Getting ready…")
 
-        def after(plan):
-            self.plan = plan
-            self._show_plan(plan, variants)
-            q = len(plan["queue"])
-            if q == 0:
-                # The commonest confusion: everyone already received the last
-                # message, so a new one queues nothing. Offer to do it here
-                # rather than sending them off to find another button.
-                if plan["already_done"]:
-                    if messagebox.askyesno(
-                            "They have already had a message",
-                            f"All {plan['already_done']} people in "
-                            f"\"{self.current}\" have already received a "
-                            f"message from this group.\n\nThat is why nothing "
-                            f"is queued — it stops people being messaged twice "
-                            f"by mistake.\n\nSend this NEW message to all "
-                            f"{plan['already_done']} of them now?"):
-                        self.state = S.reset_project_state(self.state,
-                                                           self.current)
-                        self.log(f"\"{self.current}\" reset — sending the new "
-                                 f"message to everyone.", "good")
-                        self.backend.submit(
-                            self.backend.sender.build_plan(
-                                recipients, self.state, self.current),
-                            after, lambda e: (self._reset_buttons(),
-                                              self.log(f"Could not prepare: {e}",
-                                                       "bad")))
-                        return
-                    self._reset_buttons()
-                    return
-                self._reset_buttons()
-                messagebox.showinfo(
-                    "Nothing to send",
-                    "There is nobody to send to right now — today's limit for "
-                    "new people is used up.\n\nOpen this tomorrow and it "
-                    "carries on by itself.")
-                return
-            if self.attachment and not os.path.exists(self.attachment):
-                self._reset_buttons()
-                messagebox.showerror(
-                    "The attached file is gone",
-                    f"This group has a file attached but it is no longer "
-                    f"here:\n\n{self.attachment}\n\nAttach it again, or remove "
-                    f"it to send text only.")
-                return
-            extra = (f"\nWith {S.attachment_kind(self.attachment)}: "
-                     f"{os.path.basename(self.attachment)}"
-                     if self.attachment else "")
-            if not messagebox.askyesno(
-                    "Ready to send",
-                    f"Group: {self.current}\n\nSend to {q} people?\n"
-                    f"({plan['known_queued']} you know, {plan['new_queued']} "
-                    f"new){extra}\n\nAbout {plan['hours']:.1f} hours — it sends "
-                    f"slowly, like a person typing.\n\nLeave this window open. "
-                    f"You can press STOP any time and nobody gets it twice."):
-                self._reset_buttons()
-                return
-            self._start(variants)
+        if not want_tg:
+            self._confirm_and_start(variants, None)
+            return
 
         self.backend.submit(
-            self.backend.sender.build_plan(recipients, self.state, self.current),
-            after, lambda e: (self._reset_buttons(),
-                              self.log(f"Could not prepare: {e}", "bad")))
+            self.backend.sender.build_plan(tg_people, self.state, self.current),
+            lambda plan: self._confirm_and_start(variants, plan),
+            lambda e: (self._reset_buttons(),
+                       self.log(f"Could not prepare: {e}", "bad")))
+
+    def _confirm_and_start(self, variants, plan):
+        """One confirm box covering whichever channels are going out."""
+        tg_people, em_people = S.split_channels(self.members)
+        self.plan = plan
+        if plan:
+            self._show_plan(plan, variants)
+        ep = self.email_plan
+        if ep:
+            self._show_email_plan(ep, variants)
+
+        tg_q = len(plan["queue"]) if plan else 0
+        em_q = len(ep["queue"]) if ep else 0
+
+        if tg_q + em_q == 0:
+            already = ((plan["already_done"] if plan else 0)
+                       + (ep["already_done"] if ep else 0))
+            if already:
+                if messagebox.askyesno(
+                        "They have already had a message",
+                        f"Everyone in \"{self.current}\" has already received a "
+                        f"message from this group.\n\nThat is why nothing is "
+                        f"queued — it stops people being messaged twice by "
+                        f"mistake.\n\nSend this NEW message to all "
+                        f"{already} of them now?"):
+                    self.state = S.reset_project_state(self.state,
+                                                       self.current)
+                    self.log(f"\"{self.current}\" reset — sending the new "
+                             f"message to everyone.", "good")
+                    self.email_plan = (
+                        M.build_email_plan(em_people, self.state,
+                                           self.current, self.cfg)
+                        if self.v_email.get() and em_people else None)
+                    if self.v_tg.get() and tg_people:
+                        self.backend.submit(
+                            self.backend.sender.build_plan(
+                                tg_people, self.state, self.current),
+                            lambda p: self._confirm_and_start(variants, p),
+                            lambda e: (self._reset_buttons(),
+                                       self.log(f"Could not prepare: {e}",
+                                                "bad")))
+                    else:
+                        self._confirm_and_start(variants, None)
+                    return
+                self._reset_buttons()
+                return
+            self._reset_buttons()
+            messagebox.showinfo(
+                "Nothing to send",
+                "There is nobody to send to right now — today's limit is used "
+                "up.\n\nOpen this tomorrow and it carries on by itself.")
+            return
+
+        if self.attachment and not os.path.exists(self.attachment):
+            self._reset_buttons()
+            messagebox.showerror(
+                "The attached file is gone",
+                f"This group has a file attached but it is no longer "
+                f"here:\n\n{self.attachment}\n\nAttach it again, or remove "
+                f"it to send text only.")
+            return
+
+        lines = []
+        if tg_q:
+            lines.append(f"    {tg_q} on Telegram  "
+                         f"({plan['known_queued']} you know, "
+                         f"{plan['new_queued']} new)")
+        if em_q:
+            lines.append(f"    {em_q} by email")
+        extra = (f"\nWith {S.attachment_kind(self.attachment)}: "
+                 f"{os.path.basename(self.attachment)}"
+                 if self.attachment else "")
+        hours = (plan["hours"] if plan else 0) + (ep["hours"] if ep else 0)
+
+        if not messagebox.askyesno(
+                "Ready to send",
+                f"Group: {self.current}\n\nSend to {tg_q + em_q} people?\n\n"
+                + "\n".join(lines) + f"{extra}\n\nAbout {hours:.1f} hours — it "
+                f"sends slowly, like a person.\n\nLeave this window open. You "
+                f"can press STOP any time and nobody gets it twice."):
+            self._reset_buttons()
+            return
+        self._start(variants)
+
+    def _show_email_plan(self, plan, variants):
+        q = len(plan["queue"])
+        self.log(f"Email: {q} to send now"
+                 + (f", {plan['left_for_later']} left for tomorrow"
+                    if plan["left_for_later"] else "") + ".", "info")
+        if plan["left_for_later"]:
+            self.log(f"Today's email limit is {plan['cap']}. Nothing is lost — "
+                     f"open this tomorrow and it carries on.", "warn")
 
     def _start(self, variants):
+        """Run whichever channels were ticked, one after the other.
+
+        Never both at once: each engine reports its own "finished", and two of
+        those arriving together would re-enable the SEND button while the
+        second was still going.
+        """
+        tg_plan = self.plan if (self.plan and self.plan["queue"]) else None
+        em_plan = (self.email_plan
+                   if (self.email_plan and self.email_plan["queue"]) else None)
+
         self.running = True
         self.backend.stop_flag = threading.Event()
         self.b_stop.config(state="normal")
-        self.pbar.config(maximum=max(1, len(self.plan["queue"])), value=0)
+        self.legs_left = (1 if tg_plan else 0) + (1 if em_plan else 0)
+        self.leg_results = []
+        self.pbar.config(maximum=max(1, len(
+            (tg_plan or em_plan)["queue"])), value=0)
+
+        subject = self.e_subject.get().strip()
 
         async def go():
-            if self.cfg.get("check_spambot_before_run", True):
-                self.emit("log", message="Checking account health with "
-                                         "@SpamBot…", level="info")
-                ok, text = await self.backend.sender.spambot_status()
-                self.emit("log", message="@SpamBot: "
-                          + text.replace("\n", " ")[:200],
-                          level="good" if ok else "bad")
-                if not ok:
-                    self.emit("blocked", text=text)
+            stop = self.backend.stop_flag
+            if tg_plan:
+                if self.cfg.get("check_spambot_before_run", True):
+                    self.emit("log", message="Checking account health with "
+                                             "@SpamBot…", level="info")
+                    ok, text = await self.backend.sender.spambot_status()
+                    self.emit("log", message="@SpamBot: "
+                              + text.replace("\n", " ")[:200],
+                              level="good" if ok else "bad")
+                    if not ok:
+                        self.emit("blocked", text=text)
+                        return None
+                await self.backend.sender.run(
+                    tg_plan, variants, self.state, self.current, stop,
+                    self.attachment)
+                if stop.is_set():
+                    # STOP during Telegram means stop everything.
                     return None
-            return await self.backend.sender.run(
-                self.plan, variants, self.state, self.current,
-                self.backend.stop_flag, self.attachment)
+            if em_plan:
+                await M.EmailSender(self.cfg, self.emit).run(
+                    em_plan, variants, self.state, self.current, stop,
+                    self.attachment, subject)
+            return None
 
         self.backend.submit(go(), on_error=self._run_error)
 
@@ -1625,7 +2372,22 @@ class App:
         head.pack(fill="x", padx=16, pady=(16, 6))
         tk.Label(head, text=f"{self.current}", bg=PANEL, fg=TEXT,
                  font=F(14, True)).pack(side="left")
-        tk.Label(head, text=f"   {summary['sent']} delivered"
+        # Which channel a row came from is worked out from the address itself,
+        # never from the detail column — that column already carries other
+        # things like "after wait" for Telegram rows.
+        by_email = sum(1 for r in rows
+                       if r.get("status") == "sent"
+                       and S.is_email(r.get("target", "")))
+        by_tg = summary["sent"] - by_email
+        counts = []
+        if by_tg:
+            counts.append(f"{by_tg} delivered by Telegram")
+        if by_email:
+            counts.append(f"{by_email} delivered by email")
+        if not counts:
+            counts.append(f"{summary['sent']} delivered")
+
+        tk.Label(head, text="   " + "   ·   ".join(counts)
                             + (f"   ·   {summary['failed']} could not be reached"
                                if summary["failed"] else "")
                             + f"   ·   over {summary['days']} day(s)",
@@ -1633,30 +2395,46 @@ class App:
                  font=F(11)).pack(side="left")
 
         tk.Label(win, text="Every message this app has actually sent for this "
-                           "group. Times are when Telegram accepted it.",
+                           "group. Times are when the message was accepted for "
+                           "delivery.",
                  bg=PANEL, fg=MUTED, font=F(9)).pack(anchor="w", padx=16)
 
         wrap = tk.Frame(win, bg=PANEL)
         wrap.pack(fill="both", expand=True, padx=16, pady=8)
-        cols = ("when", "who", "name", "status")
+        cols = ("when", "how", "who", "name", "status")
         tv = ttk.Treeview(wrap, columns=cols, show="headings")
-        for c, w in zip(cols, (150, 190, 150, 220)):
-            tv.heading(c, text={"when": "When", "who": "Sent to",
-                                "name": "Name", "status": "Result"}[c])
+        for c, w in zip(cols, (145, 80, 200, 130, 210)):
+            tv.heading(c, text={"when": "When", "how": "How",
+                                "who": "Sent to", "name": "Name",
+                                "status": "Result"}[c])
             tv.column(c, width=w, anchor="w")
         for r in rows:
             when = str(r.get("timestamp", "")).replace("T", "  ")
             st = r.get("status", "")
+            target = str(r.get("target", ""))
+            how = "Email" if S.is_email(target) else "Telegram"
             nice = {"sent": "delivered",
                     "cannot_receive": "blocked you / privacy setting",
                     "not_found": "number not found",
                     "peer_flood": "STOPPED — Telegram spam flag",
+                    "auth_failed": "email password not accepted",
+                    "bad_address": "email address refused",
+                    "sender_refused": "your own address was refused",
+                    "daily_limit": "your email provider's daily limit",
+                    "rejected": "the mail server refused it",
+                    "disconnected": "the mail server hung up",
+                    "timeout": "the mail server did not answer",
+                    "no_server": "mail server not found",
+                    "ssl_error": "secure connection failed",
+                    "refused": "mail server refused the connection",
+                    "no_connection": "no internet",
+                    "no_tls": "mail server does not support secure sending",
                     "error": "error"}.get(st, st)
             if r.get("detail") and st != "sent":
                 nice += f"  ({r['detail']})"
             # leading space keeps Tcl from reading "+3538..." as a number and
             # swallowing the plus sign
-            tv.insert("", "end", values=(when, " " + str(r.get("target", "")),
+            tv.insert("", "end", values=(when, how, " " + target,
                                          r.get("name", ""), nice),
                       tags=("ok" if st == "sent" else "bad",))
         tv.tag_configure("ok", foreground=GOOD)
@@ -1696,6 +2474,8 @@ class App:
             messagebox.showinfo("Log file", f"The full log is here:\n\n{path}\n\n({e})")
 
     def _on_health(self):
+        if not self._need_telegram():
+            return
         self.log("Asking @SpamBot about your account…", "info")
 
         def done(res):
@@ -1734,6 +2514,48 @@ class App:
         S.lock_touch()
         self.root.after(5000, self._heartbeat)
 
+    def _on_leg_finished(self, d):
+        """One channel has finished. Only tidy up once they all have — the
+        Telegram part finishing must not free up the SEND button while the
+        email part is still going."""
+        where = d.get("channel", "Telegram")
+        self.leg_results.append(d)
+        self.legs_left = max(0, self.legs_left - 1)
+
+        line = (f"{where}: sent {d['sent']} of {d['total']}."
+                + (f" {d['failed']} could not be reached."
+                   if d["failed"] else ""))
+        self.log(f"{line}  Reason: {d['reason']}",
+                 "good" if d["sent"] else "warn")
+
+        if self.legs_left > 0:
+            self.lbl_status.config(text=f"{line}  Now starting the email part…")
+            return
+
+        self.running = False
+        self._reset_buttons()
+        self.state = S.load_state()
+
+        sent = sum(r["sent"] for r in self.leg_results)
+        failed = sum(r["failed"] for r in self.leg_results)
+        total = sum(r["total"] for r in self.leg_results)
+        parts = [f"{r.get('channel', 'Telegram')}: {r['sent']} of {r['total']}"
+                 for r in self.leg_results]
+        msg = (f"Done. Sent {sent} of {total}."
+               + (f" {failed} could not be reached." if failed else ""))
+        if len(self.leg_results) > 1:
+            msg += "\n\n" + "\n".join(parts)
+
+        self.lbl_status.config(
+            text=f"Done. Sent {sent} of {total}."
+                 + (f"  ({self.leg_results[-1]['reason']})"))
+        if any(r.get("channel") != "Email" for r in self.leg_results):
+            self.log("Telegram replies arrive in your normal Telegram, in each "
+                     "person's private chat.", "info")
+        if any(r.get("channel") == "Email" for r in self.leg_results):
+            self.log("Email replies arrive in your normal inbox.", "info")
+        messagebox.showinfo("Finished", msg)
+
     def _drain(self):
         try:
             while True:
@@ -1743,9 +2565,12 @@ class App:
                 elif kind == "log":
                     self.log(d["message"], d.get("level", "info"))
                 elif kind == "progress":
-                    self.pbar.config(value=d["done"])
+                    # each leg re-sizes the bar for its own total
+                    self.pbar.config(maximum=max(1, d["total"]),
+                                     value=d["done"])
+                    where = d.get("channel", "Telegram")
                     self.lbl_status.config(
-                        text=f"Sent {d['sent']} of {d['total']}"
+                        text=f"{where}: sent {d['sent']} of {d['total']}"
                              + (f"  ·  {d['failed']} could not be reached"
                                 if d["failed"] else ""))
                 elif kind == "waiting":
@@ -1769,18 +2594,11 @@ class App:
                         "sent.\n\nOpen @SpamBot in Telegram and appeal. Limits "
                         "are usually lifted in 24–72 hours.\n\n"
                         + d["text"][:500])
+                elif kind == "email_blocked":
+                    self.lbl_status.config(text="Email settings need fixing.")
+                    messagebox.showerror("Email did not go out", d["text"])
                 elif kind == "finished":
-                    self.running = False
-                    self._reset_buttons()
-                    self.state = S.load_state()
-                    msg = (f"Done. Sent {d['sent']} of {d['total']}."
-                           + (f" {d['failed']} could not be reached."
-                              if d["failed"] else ""))
-                    self.lbl_status.config(text=f"{msg}  ({d['reason']})")
-                    self.log(f"{msg}  Reason: {d['reason']}", "good")
-                    self.log("Replies arrive in your normal Telegram, in each "
-                             "person's private chat.", "info")
-                    messagebox.showinfo("Finished", msg)
+                    self._on_leg_finished(d)
         except queue.Empty:
             pass
         self.root.after(80, self._drain)

@@ -107,16 +107,78 @@ def app_password_url(address):
 # --------------------------------------------------------- plain English
 # Nobody using this should ever see the word "SMTPAuthenticationError".
 
-APP_PASSWORD_HELP = (
-    "Your email address or password was not accepted.\n\n"
-    "If you use Gmail, Outlook, Yahoo or iCloud, your normal password will "
-    "NOT work here. You need a special 16-letter App Password:\n\n"
-    "  1. Turn on 2-step verification on your email account.\n"
-    "  2. Open the App Passwords page (press the \"?\" button in Email "
-    "settings and it opens for you).\n"
-    "  3. Create one for \"Mail\".\n"
-    "  4. Copy the 16 letters and paste them into the Password box here.\n\n"
-    "That is the whole fix. Nothing is wrong with your account.")
+# Each provider words this differently and puts the page somewhere else, so
+# telling a Microsoft user to "create one for Mail" the way Google does just
+# sends them hunting. Name their own provider and give their own steps.
+APP_PASSWORD_STEPS = {
+    "google": (
+        "Google", "https://myaccount.google.com/apppasswords",
+        "  1. Press the \"?\" button beside the Password box. It opens the\n"
+        "     Google App Passwords page for you.\n"
+        "  2. In the one box on that page type any name, e.g. Sender, and\n"
+        "     click Create.\n"
+        "  3. Google shows you 16 letters in four small groups.\n"
+        "     Copy them straight away - that box never comes back.\n"
+        "  4. Paste them into the Password box here. Spaces do not matter.\n\n"
+        "If Google will not let you make one, 2-Step Verification is off.\n"
+        "Turn it on at https://myaccount.google.com/signinoptions/twosv\n"
+        "then try again."),
+    "microsoft": (
+        "Microsoft", "https://account.live.com/proofs/AppPassword",
+        "  1. Press the \"?\" button beside the Password box. It opens the\n"
+        "     Microsoft App Passwords page for you.\n"
+        "  2. Click \"Create a new app password\".\n"
+        "  3. Microsoft shows you a password made of letters.\n"
+        "     Copy it straight away - it only appears once.\n"
+        "  4. Paste it into the Password box here.\n\n"
+        "If that page will not let you make one, two-step verification is\n"
+        "off. Turn it on at https://account.microsoft.com/security\n"
+        "(Advanced security options), then try again."),
+    "yahoo": (
+        "Yahoo", "https://login.yahoo.com/account/security",
+        "  1. Press the \"?\" button beside the Password box.\n"
+        "  2. Click \"Generate app password\".\n"
+        "  3. Copy the password it shows you.\n"
+        "  4. Paste it into the Password box here."),
+    "apple": (
+        "Apple", "https://appleid.apple.com/account/manage",
+        "  1. Press the \"?\" button beside the Password box.\n"
+        "  2. Go to Sign-In and Security, then App-Specific Passwords.\n"
+        "  3. Create one and copy it.\n"
+        "  4. Paste it into the Password box here."),
+}
+
+
+def app_password_help(address=""):
+    """The wrong-password message, written for whoever they are actually with."""
+    key = _provider_key(address)
+    if not key:
+        return ("Your email address or password was not accepted.\n\n"
+                "Check both are typed correctly.\n\n"
+                "Many email providers will not accept your normal password "
+                "from another program and give you a separate \"app password\" "
+                "instead. If yours does, use that here. Your email provider's "
+                "help pages will say.")
+    who, _url, steps = APP_PASSWORD_STEPS[key]
+    return (f"Your email address or password was not accepted.\n\n"
+            f"{who} will not let any program send email using your normal "
+            f"password. You need a separate App Password. It is free and takes "
+            f"two minutes.\n\n{steps}\n\n"
+            f"Nothing is wrong with your account.")
+
+
+def _provider_key(address):
+    d = domain_of(address)
+    if d in ("gmail.com", "googlemail.com"):
+        return "google"
+    if d in ("outlook.com", "hotmail.com", "hotmail.co.uk", "hotmail.ie",
+             "live.com", "live.ie", "live.co.uk", "msn.com"):
+        return "microsoft"
+    if d.startswith("yahoo") or d == "ymail.com":
+        return "yahoo"
+    if d in ("icloud.com", "me.com"):
+        return "apple"
+    return None
 
 
 def explain(exc, addr="", cfg=None):
@@ -131,7 +193,7 @@ def explain(exc, addr="", cfg=None):
     me = cfg.get("email_address", "your address")
 
     if isinstance(exc, smtplib.SMTPAuthenticationError):
-        return "auth_failed", APP_PASSWORD_HELP, True
+        return "auth_failed", app_password_help(me), True
 
     if isinstance(exc, smtplib.SMTPSenderRefused):
         return ("sender_refused",

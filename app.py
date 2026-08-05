@@ -743,16 +743,31 @@ class App:
 
         help_row = tk.Frame(form, bg=PANEL)
         help_row.grid(row=2, column=1, sticky="w")
-        tk.Label(help_row, text="Gmail, Outlook, Yahoo and iCloud need an "
-                                "\"App Password\", not your normal one.",
-                 bg=PANEL, fg=WARN, font=F(9), wraplength=380,
-                 justify="left").pack(side="left")
+        lbl_pw = tk.Label(help_row, bg=PANEL, fg=WARN, font=F(9),
+                          wraplength=360, justify="left")
+        lbl_pw.pack(side="left")
 
         def open_app_pw():
             webbrowser.open(M.app_password_url(rows["addr"].get().strip()))
-            self.log("Opened the App Password page in your browser.", "info")
+            self.log("Opened the App Password page in your browser. Make a "
+                     "password there, copy it, and paste it into the Password "
+                     "box.", "info")
 
         flat_btn(help_row, "?", open_app_pw, pad=6).pack(side="left", padx=4)
+
+        def _pw_hint():
+            """Name their own provider — "Gmail, Outlook, Yahoo and iCloud"
+            makes a Microsoft user wonder which bit is about them."""
+            key = M._provider_key(rows["addr"].get().strip())
+            if key:
+                who = M.APP_PASSWORD_STEPS[key][0]
+                lbl_pw.config(text=f"{who} needs an \"App Password\" here, NOT "
+                                   f"your normal password. Press ? to make "
+                                   f"one.")
+            else:
+                lbl_pw.config(text="Most providers need an \"App Password\" "
+                                   "here rather than your normal one.")
+        self._pw_hint = _pw_hint
 
         rows["from"] = row(3, "Your name on the email",
                            self.cfg.get("email_from_name", ""))
@@ -779,6 +794,12 @@ class App:
                 rows["port"].delete(0, "end")
                 rows["port"].insert(0, str(g[1]))
             lbl_guess.config(text=f"Filled in for you: {g[0]}", fg=GOOD)
+
+        _old_autofill = autofill
+
+        def autofill(_=None):
+            _old_autofill()
+            _pw_hint()
 
         rows["addr"].bind("<FocusOut>", autofill)
         rows["addr"].bind("<Return>", autofill)

@@ -700,7 +700,7 @@ class App:
         """Everything about email, in one box, in plain words."""
         win = tk.Toplevel(self.root)
         win.title("Email settings")
-        win.geometry("640x610")
+        win.geometry(f"660x{min(660, self.root.winfo_screenheight() - 120)}")
         win.configure(bg=PANEL)
         win.transient(self.root)
 
@@ -711,6 +711,14 @@ class App:
                            "is nothing to pay and no account to sign up for.",
                  bg=PANEL, fg=MUTED, font=F(10), wraplength=580,
                  justify="left").pack(anchor="w", padx=20, pady=(0, 12))
+
+        # Claim the bottom strip BEFORE anything else, so the buttons can
+        # never be squeezed off the edge of a short screen.
+        btns = tk.Frame(win, bg=PANEL)
+        btns.pack(side="bottom", fill="x", padx=20, pady=(8, 16))
+        status = tk.Label(win, text="", bg=PANEL, fg=MUTED, font=F(10),
+                          wraplength=580, justify="left")
+        status.pack(side="bottom", anchor="w", padx=20)
 
         form = tk.Frame(win, bg=PANEL)
         form.pack(fill="x", padx=20)
@@ -807,10 +815,6 @@ class App:
                  bg=PANEL, fg=MUTED, font=F(9)).pack(anchor="w", padx=20,
                                                      pady=(3, 0))
 
-        status = tk.Label(win, text="", bg=PANEL, fg=MUTED, font=F(10),
-                          wraplength=580, justify="left")
-        status.pack(anchor="w", padx=20, pady=(12, 0))
-
         def collect():
             try:
                 port = int(rows["port"].get().strip() or 587)
@@ -881,8 +885,6 @@ class App:
                 M.EmailSender(self.cfg, self.emit).test_connection(addr),
                 done, lambda e: status.config(text=str(e), fg=BAD))
 
-        btns = tk.Frame(win, bg=PANEL)
-        btns.pack(fill="x", padx=20, pady=16, side="bottom")
         tk.Button(btns, text="Send myself a test email", command=test,
                   bg=ACCENT, fg="white", font=F(11, True), relief="flat",
                   bd=0, cursor="hand2", padx=18, pady=7,

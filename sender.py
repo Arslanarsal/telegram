@@ -168,6 +168,12 @@ DEFAULT_CONFIG = {
     "email_smtp_host": "",
     "email_smtp_port": 587,
     "email_use_tls": True,
+    # "password" or "microsoft". Microsoft blocked password sending for
+    # personal Outlook/Hotmail/Live accounts, so those sign in instead and we
+    # keep a refresh token rather than a password.
+    "email_auth": "password",
+    "email_oauth_refresh_token": "",
+    "email_oauth_client_id": "",
     # Email is far less risky than Telegram, but providers still throttle.
     # 20-60s keeps a normal mailbox comfortably under every provider's radar.
     "email_delay_min": 20,
@@ -273,7 +279,8 @@ def load_config():
 # Keys that belong to this one machine and must always be kept locally.
 ALWAYS_SAVE = ("api_id", "api_hash", "session_name", "last_phone",
                "email_address", "email_password", "email_from_name",
-               "email_smtp_host", "email_smtp_port")
+               "email_smtp_host", "email_smtp_port", "email_auth",
+               "email_oauth_refresh_token", "email_oauth_client_id")
 
 
 def save_config(cfg):

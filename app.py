@@ -724,10 +724,12 @@ class App:
         form.pack(fill="x", padx=20)
         rows = {}
 
+        labels = {}
+
         def row(r, label, value, show=None, width=34):
-            tk.Label(form, text=label, bg=PANEL, fg=TEXT,
-                     font=F(10)).grid(row=r, column=0, sticky="e", pady=5,
-                                      padx=(0, 10))
+            lb = tk.Label(form, text=label, bg=PANEL, fg=TEXT, font=F(10))
+            lb.grid(row=r, column=0, sticky="e", pady=5, padx=(0, 10))
+            labels[r] = lb
             e = tk.Entry(form, width=width, font=F(11), relief="flat",
                          bg="#f5f6f7", highlightthickness=1,
                          highlightbackground=LINE, highlightcolor=ACCENT,
@@ -740,6 +742,7 @@ class App:
             "email_address", ""))
         rows["pwd"] = row(1, "Password", self.cfg.get("email_password", ""),
                           show="•")
+        lbl_pwd_label = labels[1]
 
         help_row = tk.Frame(form, bg=PANEL)
         help_row.grid(row=2, column=1, sticky="w")
@@ -755,9 +758,39 @@ class App:
 
         flat_btn(help_row, "?", open_app_pw, pad=6).pack(side="left", padx=4)
 
+        # Microsoft no longer accepts a password at all, so those accounts get
+        # a sign-in button here instead of the password row.
+        ms_row = tk.Frame(form, bg=PANEL)
+        lbl_ms = tk.Label(ms_row, bg=PANEL, fg=TEXT, font=F(10),
+                          wraplength=360, justify="left")
+        lbl_ms.pack(side="left")
+
+        def _is_microsoft():
+            return M._provider_key(rows["addr"].get().strip()) == "microsoft"
+
         def _pw_hint():
             """Name their own provider — "Gmail, Outlook, Yahoo and iCloud"
             makes a Microsoft user wonder which bit is about them."""
+            if _is_microsoft():
+                # hide the password row entirely; it cannot work
+                rows["pwd"].grid_remove()
+                lbl_pwd_label.grid_remove()
+                help_row.grid_remove()
+                ms_row.grid(row=2, column=1, sticky="w", pady=(2, 6))
+                b_ms.pack(side="left", padx=(0, 8))
+                signed = bool(self.cfg.get("email_oauth_refresh_token"))
+                lbl_ms.config(
+                    text=("Signed in. Microsoft does not use a password here."
+                          if signed else
+                          "Microsoft no longer allows programs to send with a "
+                          "password. Sign in once with your Microsoft account "
+                          "instead."),
+                    fg=GOOD if signed else WARN)
+                return
+            ms_row.grid_remove()
+            rows["pwd"].grid()
+            lbl_pwd_label.grid()
+            help_row.grid()
             key = M._provider_key(rows["addr"].get().strip())
             if key:
                 who = M.APP_PASSWORD_STEPS[key][0]
@@ -767,7 +800,20 @@ class App:
             else:
                 lbl_pw.config(text="Most providers need an \"App Password\" "
                                    "here rather than your normal one.")
-        self._pw_hint = _pw_hint
+
+        def sign_in_microsoft():
+            addr = rows["addr"].get().strip()
+            if not addr:
+                status.config(text="Type your email address first.", fg=BAD)
+                return
+            self._microsoft_signin(addr, status, lbl_ms, rows)
+
+        b_ms = tk.Button(ms_row, text="Sign in with Microsoft", bg=ACCENT,
+                         fg="white", font=F(10, True), relief="flat", bd=0,
+                         cursor="hand2", padx=14, pady=5,
+                         activebackground=ACCENT_DARK,
+                         activeforeground="white",
+                         command=sign_in_microsoft)
 
         rows["from"] = row(3, "Your name on the email",
                            self.cfg.get("email_from_name", ""))
@@ -918,6 +964,130 @@ class App:
         flat_btn(btns, "Cancel", win.destroy, pad=8).pack(side="right", padx=8)
 
         autofill()
+
+    def _microsoft_signin(self, addr, status, lbl_ms, rows):
+        """Sign in with a real Microsoft account instead of a password.
+
+        Microsoft shows a short code; they type it into their browser once and
+        it stays connected afterwards.
+        """
+        status.config(text="Asking Microsoft for a sign-in code…", fg=MUTED)
+        self.root.update_idletasks()
+
+        try:
+            started = M.ms_start_signin(self.cfg)
+        except M.SignInError as e:
+            status.config(text=str(e), fg=BAD)
+            messagebox.showerror("Could not start the sign-in", str(e))
+            return
+
+        code = started["user_code"]
+        url = started.get("verification_uri",
+                          "https://microsoft.com/devicelogin")
+
+        win = tk.Toplevel(self.root)
+        win.title("Sign in with Microsoft")
+        win.configure(bg=PANEL)
+        win.geometry("520x360")
+        win.transient(self.root)
+
+        tk.Label(win, text="Two steps and you are done", bg=PANEL, fg=TEXT,
+                 font=F(14, True)).pack(anchor="w", padx=24, pady=(20, 4))
+        tk.Label(win, text="1.  Your browser is opening the Microsoft page.\n"
+                           "2.  Type this code there, then sign in as "
+                           f"{addr}.",
+                 bg=PANEL, fg=MUTED, font=F(10), justify="left").pack(
+            anchor="w", padx=24)
+
+        box = tk.Frame(win, bg="#f5f6f7", highlightbackground=LINE,
+                       highlightthickness=1)
+        box.pack(fill="x", padx=24, pady=14)
+        tk.Label(box, text=code, bg="#f5f6f7", fg=ACCENT,
+                 font=(MONO, 26, "bold")).pack(pady=14)
+
+        def copy_code():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(code)
+            lbl_state.config(text="Code copied. Paste it into the Microsoft "
+                                  "page.", fg=GOOD)
+
+        btn_row = tk.Frame(win, bg=PANEL)
+        btn_row.pack(fill="x", padx=24)
+        flat_btn(btn_row, "Copy the code", copy_code, pad=6).pack(side="left")
+        flat_btn(btn_row, "Open the page again",
+                 lambda: webbrowser.open(url), pad=6).pack(side="left", padx=8)
+
+        lbl_state = tk.Label(win, text="Waiting for you to sign in…", bg=PANEL,
+                             fg=MUTED, font=F(10), wraplength=460,
+                             justify="left")
+        lbl_state.pack(anchor="w", padx=24, pady=(14, 0))
+
+        cancelled = threading.Event()
+        flat_btn(win, "Cancel", lambda: (cancelled.set(), win.destroy()),
+                 pad=8).pack(side="bottom", pady=14)
+
+        webbrowser.open(url)
+        self.log(f"Microsoft sign-in code: {code}  (page: {url})", "info")
+
+        def done(refresh):
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            if not refresh:
+                return
+            self.cfg["email_auth"] = "microsoft"
+            self.cfg["email_oauth_refresh_token"] = refresh
+            self.cfg["email_address"] = addr
+            self.cfg["email_password"] = ""
+            g = M.guess_smtp(addr)
+            if g:
+                self.cfg["email_smtp_host"] = g[0]
+                self.cfg["email_smtp_port"] = g[1]
+                self.cfg["email_use_tls"] = g[2]
+                rows["host"].delete(0, "end")
+                rows["host"].insert(0, g[0])
+                rows["port"].delete(0, "end")
+                rows["port"].insert(0, str(g[1]))
+            try:
+                S.save_config(self.cfg)
+            except S.SaveError as e:
+                status.config(text=f"Signed in, but could not save: {e}",
+                              fg=BAD)
+                return
+            lbl_ms.config(text="Signed in. Microsoft does not use a password "
+                               "here.", fg=GOOD)
+            status.config(text="Signed in with Microsoft. Now press \"Send "
+                               "myself a test email\".", fg=GOOD)
+            self.log(f"Signed in to Microsoft as {addr}.", "good")
+            messagebox.showinfo(
+                "Signed in",
+                "You are connected to Microsoft.\n\nThere is no password to "
+                "remember and you will not have to do this again.\n\nNow press "
+                "\"Send myself a test email\" to make sure it works.")
+
+        def failed(e):
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            if cancelled.is_set():
+                return
+            status.config(text=str(e), fg=BAD)
+            messagebox.showerror("Sign-in did not finish", str(e))
+
+        def tick(left):
+            self.emit("_call", fn=lambda s: lbl_state.config(
+                text=f"Waiting for you to sign in…  ({s // 60}m "
+                     f"{s % 60:02d}s left)"), arg=left)
+
+        async def go():
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None, lambda: M.ms_finish_signin(started, self.cfg, cancelled,
+                                                 tick))
+
+        self.backend.submit(go(), done, failed)
 
     def _plain_entry(self, parent, value, width=6):
         e = tk.Entry(parent, width=width, font=F(10), relief="flat",

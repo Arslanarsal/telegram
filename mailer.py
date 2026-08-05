@@ -10,12 +10,17 @@ this one, so the Telegram side cannot be affected by anything in here.
 """
 
 import asyncio
+import base64
+import json
 import mimetypes
 import os
 import random
 import smtplib
 import socket
 import ssl
+import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
@@ -102,6 +107,129 @@ def app_password_url(address):
     if d in ("icloud.com", "me.com"):
         return APP_PASSWORD_URLS["apple"]
     return APP_PASSWORD_URLS["google"]
+
+
+# -------------------------------------------------- signing in to Microsoft
+# Microsoft switched personal Outlook/Hotmail/Live accounts off password
+# sending altogether (535 5.7.139). The only way left is OAuth, so instead of
+# a password the user signs in with their real Microsoft account and we keep
+# a refresh token. Nothing here needs a library: it is two HTTP calls and a
+# base64 string.
+
+MS_AUTH_BASE = "https://login.microsoftonline.com/common/oauth2/v2.0"
+MS_SCOPE = "offline_access https://outlook.office.com/SMTP.Send"
+# Registered as "Telegram Sender", any Microsoft account. A public client id
+# is not a secret — it identifies the app, it does not authorise anything.
+MS_CLIENT_ID = "828e3ae2-6d94-4dd1-ae0a-09aae387f53e"
+
+
+class SignInError(Exception):
+    """Something went wrong signing in, already worded for a human."""
+
+
+def _post(url, fields, timeout=30):
+    data = urllib.parse.urlencode(fields).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read().decode())
+        except Exception:
+            raise SignInError(f"Microsoft did not answer properly ({e.code}).")
+    except urllib.error.URLError as e:
+        raise SignInError("Could not reach Microsoft. Check your internet "
+                          f"connection.\n\n({e.reason})")
+
+
+def ms_client_id(cfg=None):
+    return ((cfg or {}).get("email_oauth_client_id") or "").strip() \
+        or MS_CLIENT_ID
+
+
+def ms_start_signin(cfg=None):
+    """Ask Microsoft for a short code the user types into their browser.
+
+    -> {"user_code", "verification_uri", "device_code", "interval",
+        "expires_in", "message"}
+    """
+    r = _post(f"{MS_AUTH_BASE}/devicecode",
+              {"client_id": ms_client_id(cfg), "scope": MS_SCOPE})
+    if "device_code" not in r:
+        raise SignInError(_ms_error(r))
+    return r
+
+
+def ms_finish_signin(started, cfg=None, stop=None, on_wait=None):
+    """Wait for them to finish in the browser. -> refresh_token."""
+    interval = max(3, int(started.get("interval", 5)))
+    deadline = time.time() + int(started.get("expires_in", 900))
+    while time.time() < deadline:
+        if stop is not None and stop.is_set():
+            raise SignInError("Sign-in cancelled.")
+        if on_wait:
+            on_wait(int(deadline - time.time()))
+        time.sleep(interval)
+        r = _post(f"{MS_AUTH_BASE}/token", {
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "client_id": ms_client_id(cfg),
+            "device_code": started["device_code"]})
+        err = r.get("error")
+        if err in ("authorization_pending", "slow_down"):
+            if err == "slow_down":
+                interval += 5
+            continue
+        if err:
+            raise SignInError(_ms_error(r))
+        if r.get("refresh_token"):
+            return r["refresh_token"]
+        raise SignInError("Microsoft signed you in but did not return the "
+                          "permission we need. In the app registration, check "
+                          "offline_access is added under API permissions.")
+    raise SignInError("The sign-in code ran out before it was used. Press "
+                      "\"Sign in with Microsoft\" and try again.")
+
+
+def ms_access_token(refresh_token, cfg=None):
+    """Swap the stored token for a fresh one. Lasts about an hour."""
+    r = _post(f"{MS_AUTH_BASE}/token", {
+        "grant_type": "refresh_token", "client_id": ms_client_id(cfg),
+        "refresh_token": refresh_token, "scope": MS_SCOPE})
+    if r.get("access_token"):
+        return r["access_token"], r.get("refresh_token") or refresh_token
+    raise SignInError(_ms_error(r, signed_out=True))
+
+
+def _ms_error(r, signed_out=False):
+    """Microsoft's error codes, in words that mean something."""
+    code = r.get("error", "")
+    desc = r.get("error_description", "") or ""
+    if code == "invalid_client" or "AADSTS7000218" in desc:
+        return ("Microsoft did not accept this app.\n\nIn the app "
+                "registration, open Authentication and set \"Allow public "
+                "client flows\" to Yes, then try again.")
+    if code == "unauthorized_client" or "AADSTS700016" in desc:
+        return ("Microsoft does not recognise this app.\n\nCheck the "
+                "Application (client) ID is correct, and that the app allows "
+                "personal Microsoft accounts.")
+    if code in ("invalid_grant", "interaction_required") or signed_out:
+        return ("Microsoft has signed this out. It happens if the password "
+                "changed or the permission was withdrawn.\n\nPress \"Sign in "
+                "with Microsoft\" again to reconnect. It takes a few seconds.")
+    if code == "authorization_declined":
+        return "You cancelled the sign-in. Press the button to try again."
+    if code == "expired_token":
+        return "The code ran out. Press the button to get a new one."
+    if "AADSTS65001" in desc or code == "consent_required":
+        return ("The permission to send email was not granted.\n\nSign in "
+                "again and press Accept when Microsoft asks.")
+    return f"Microsoft would not sign this in.\n\n{desc[:300] or code}"
+
+
+def _xoauth2_string(user, token):
+    return base64.b64encode(
+        f"user={user}\1auth=Bearer {token}\1\1".encode()).decode()
 
 
 # --------------------------------------------------------- plain English
@@ -366,6 +494,27 @@ class EmailSender:
             if use_tls:
                 conn.starttls(context=ssl.create_default_context())
                 conn.ehlo()
+
+        if self.cfg.get("email_auth") == "microsoft":
+            # Signed in with a Microsoft account instead of a password.
+            token, fresh = ms_access_token(
+                self.cfg.get("email_oauth_refresh_token") or "", self.cfg)
+            if fresh != self.cfg.get("email_oauth_refresh_token"):
+                # Microsoft rotates these; keep the new one or the next run
+                # would have to sign in all over again.
+                self.cfg["email_oauth_refresh_token"] = fresh
+                try:
+                    S.save_config(self.cfg)
+                except Exception:
+                    pass
+            conn.ehlo_or_helo_if_needed()
+            code, resp = conn.docmd(
+                "AUTH", "XOAUTH2 " + _xoauth2_string(addr, token))
+            if code != 235:
+                # Microsoft answers a failed XOAUTH2 with a base64 blob.
+                raise smtplib.SMTPAuthenticationError(code, resp)
+            return conn
+
         conn.login(addr, pwd)
         return conn
 
@@ -466,7 +615,10 @@ class EmailSender:
         addr = (self.cfg.get("email_address") or "").strip()
         if not addr:
             return False, "Fill in your email address first."
-        if not (self.cfg.get("email_password") or ""):
+        if self.cfg.get("email_auth") == "microsoft":
+            if not (self.cfg.get("email_oauth_refresh_token") or ""):
+                return False, ("Press \"Sign in with Microsoft\" first.")
+        elif not (self.cfg.get("email_password") or ""):
             return False, "Fill in your password first."
 
         def work():

@@ -193,6 +193,24 @@ def explain(exc, addr="", cfg=None):
     me = cfg.get("email_address", "your address")
 
     if isinstance(exc, smtplib.SMTPAuthenticationError):
+        # Microsoft has switched personal Outlook/Hotmail/Live accounts off
+        # password sign-in altogether. An app password is correct and still
+        # refused, so telling them to go and make another one would send them
+        # round in circles forever.
+        raw = f"{getattr(exc, 'smtp_error', b'')}".lower()
+        if "basic authentication is disabled" in raw or "5.7.139" in raw:
+            return ("basic_auth_off",
+                    "Microsoft has turned off password sending for this "
+                    "account, so no password will work here — not even an App "
+                    "Password.\n\nThis is a change Microsoft made to "
+                    "Outlook.com, Hotmail and Live accounts. There is no "
+                    "setting to switch it back on, and nothing is wrong with "
+                    "your account or your password.\n\nThe simple way round "
+                    "it is to send your emails from a Gmail address instead. "
+                    "Gmail is free, it takes a few minutes to set up, and your "
+                    "people will receive the emails exactly the same.\n\n"
+                    "Send your developer a screenshot of this and he will "
+                    "sort it out with you.", True)
         return "auth_failed", app_password_help(me), True
 
     if isinstance(exc, smtplib.SMTPSenderRefused):

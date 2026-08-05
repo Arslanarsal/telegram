@@ -250,6 +250,20 @@ def test_explain():
                                         message, re.I),
               message[:70])
 
+    # Microsoft turning off password sending is NOT a wrong password, and
+    # must never tell them to go and make another app password.
+    ms = smtplib.SMTPAuthenticationError(
+        535, b"5.7.139 Authentication unsuccessful, basic authentication is "
+             b"disabled.")
+    st, msg, fatal = M.explain(ms, "t@live.com",
+                               {"email_address": "t@live.com"})
+    check("Microsoft's basic-auth block is told apart from a wrong password",
+          st == "basic_auth_off" and fatal, st)
+    check("and it does not send them round in circles",
+          "App Password" not in msg or "not even an App Password" in msg,
+          msg[:80])
+    check("it offers the way round it", "Gmail" in msg)
+
     status, message, _ = M.explain(
         smtplib.SMTPAuthenticationError(535, b"bad"), "x", cfg)
     check("a wrong password explains app passwords",

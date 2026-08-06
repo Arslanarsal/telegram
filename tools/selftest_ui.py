@@ -286,6 +286,37 @@ def main():
           any(t == "They have already had a message" for _, t, _ in SEEN))
     ANSWERS.pop("They have already had a message")
 
+    section("7b. It says WHY somebody was skipped")
+    # Tommy's exact report: 2 people in the group, "Sent 1 of 1", and no
+    # explanation of where the other one went.
+    # its own group, so it cannot disturb what the later checks look at
+    was = app.current
+    S.set_project(app.projects, "Tommy case", "hi",
+                  "designertommy1@gmail.com, Tommy\n"
+                  "eugenebyrne24@gmail.com, Eug\n")
+    st = S.load_state()
+    S.project_state(st, "Tommy case")["sent"]["designertommy1@gmail.com"] = "y"
+    S.save_state(st)
+    app.state = st
+
+    logged = []
+    real_log = app.log
+    app.log = lambda m, lv="info": (logged.append(m), real_log(m, lv))
+    ep = M.build_email_plan([("designertommy1@gmail.com", "Tommy"),
+                             ("eugenebyrne24@gmail.com", "Eug")],
+                            app.state, "Tommy case", app.cfg)
+    app._show_email_plan(ep, ["hi"])
+    app.log = real_log
+    check("only the new person is queued", len(ep["queue"]) == 1, str(ep))
+    check("it counts the one already done", ep["already_done"] == 1)
+    check("and it SAYS so in the log",
+          any("already had an email" in m for m in logged), str(logged))
+    check("and points at Send again to everyone",
+          any("Send again to everyone" in m for m in logged))
+    app.current = was
+    app.projects = S.load_projects()
+    app._load_current_project()
+
     section("8. One message everyone sees")
     FakeEmail.calls.clear()
     app.backend.sender.ran.clear()

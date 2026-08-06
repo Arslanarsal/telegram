@@ -2468,12 +2468,27 @@ class App:
                  if self.attachment else "")
         hours = (plan["hours"] if plan else 0) + (ep["hours"] if ep else 0)
 
+        # Say up front who is being left out. Otherwise "2 people in this
+        # group" followed by "Sent 1 of 1" reads as a lost person.
+        skipped = ((plan["already_done"] if plan else 0)
+                   + (ep["already_done"] if ep else 0))
+        note = ""
+        if skipped:
+            note = (f"\n\n{skipped} more in this group already had this "
+                    f"message, so {'they are' if skipped > 1 else 'it is'} "
+                    f"not included. That is why it says "
+                    f"{tg_q + em_q} and not {tg_q + em_q + skipped}.\n"
+                    f"Use \"Send again to everyone\" if you want "
+                    f"{'them' if skipped > 1 else 'it'} to get it again.")
+
+        total = tg_q + em_q
+        who = "1 person" if total == 1 else f"{total} people"
         if not messagebox.askyesno(
                 "Ready to send",
-                f"Group: {self.current}\n\nSend to {tg_q + em_q} people?\n\n"
-                + "\n".join(lines) + f"{extra}\n\nAbout {hours:.1f} hours — it "
-                f"sends slowly, like a person.\n\nLeave this window open. You "
-                f"can press STOP any time and nobody gets it twice."):
+                f"Group: {self.current}\n\nSend to {who}?\n\n"
+                + "\n".join(lines) + f"{extra}{note}\n\nAbout {hours:.1f} "
+                f"hours — it sends slowly, like a person.\n\nLeave this window "
+                f"open. You can press STOP any time and nobody gets it twice."):
             self._reset_buttons()
             return
         self._start(variants)
@@ -2483,6 +2498,15 @@ class App:
         self.log(f"Email: {q} to send now"
                  + (f", {plan['left_for_later']} left for tomorrow"
                     if plan["left_for_later"] else "") + ".", "info")
+        # Without this, "2 people in the group" and "Sent 1 of 1" look like
+        # the app lost somebody.
+        if plan["already_done"]:
+            n = plan["already_done"]
+            self.log(f"{n} of them already had an email from this group, so "
+                     f"{'they are' if n > 1 else 'it is'} skipped — nobody "
+                     f"gets the same thing twice. Use \"Send again to "
+                     f"everyone\" if you want {'them' if n > 1 else 'it'} "
+                     f"included.", "warn")
         if plan["left_for_later"]:
             self.log(f"Today's email limit is {plan['cap']}. Nothing is lost — "
                      f"open this tomorrow and it carries on.", "warn")
@@ -2738,6 +2762,16 @@ class App:
                + (f" {failed} could not be reached." if failed else ""))
         if len(self.leg_results) > 1:
             msg += "\n\n" + "\n".join(parts)
+
+        # "Sent 1 of 1" out of a group of 2 looks like somebody was lost.
+        skipped = ((self.plan or {}).get("already_done", 0)
+                   + (self.email_plan or {}).get("already_done", 0))
+        if skipped:
+            msg += (f"\n\n{skipped} other{'s' if skipped > 1 else ''} in this "
+                    f"group had already been sent this, so "
+                    f"{'they were' if skipped > 1 else 'it was'} skipped — "
+                    f"nobody gets it twice.\n\nUse \"Send again to everyone\" "
+                    f"at the top if you want everybody to get it.")
 
         self.lbl_status.config(
             text=f"Done. Sent {sent} of {total}."

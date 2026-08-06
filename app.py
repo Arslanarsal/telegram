@@ -649,6 +649,24 @@ class App:
         flat_btn(sr2, "Reset to safe defaults", self._on_reset_settings,
                  pad=6).pack(side="right")
 
+        # -------- what SEND means for people who already had one
+        sr3 = tk.Frame(sc, bg=PANEL)
+        sr3.pack(fill="x", padx=12, pady=(0, 8))
+        tk.Label(sr3, text="When some already had a message", bg=PANEL,
+                 fg=TEXT, font=F(10, True)).pack(side="left")
+        self.ALREADY_LABELS = {
+            "ask": "Ask me each time",
+            "all": "Always send to everyone",
+            "new": "Only the ones who never got it",
+        }
+        self.cb_already = ttk.Combobox(
+            sr3, state="readonly", width=30,
+            values=list(self.ALREADY_LABELS.values()))
+        self.cb_already.set(self.ALREADY_LABELS.get(
+            self.cfg.get("when_already_sent", "ask"), "Ask me each time"))
+        self.cb_already.pack(side="left", padx=8)
+        self.cb_already.bind("<<ComboboxSelected>>", self._on_already_change)
+
         self.lbl_settings = tk.Label(sc, text="", bg=PANEL, fg=MUTED, font=F(9),
                                      anchor="w")
         self.lbl_settings.pack(fill="x", padx=12, pady=(0, 10))
@@ -688,6 +706,26 @@ class App:
         else:
             self.mid_bar.pack(side="right", fill="y", pady=12)
         self.mid_bar.set(first, last)
+
+    def _on_already_change(self, _=None):
+        picked = self.cb_already.get()
+        val = next((k for k, v in self.ALREADY_LABELS.items() if v == picked),
+                   "ask")
+        self.cfg["when_already_sent"] = val
+        try:
+            S.save_config(self.cfg)
+        except S.SaveError as e:
+            self.lbl_settings.config(text=f"COULD NOT SAVE: {e}", fg=BAD)
+            return
+        self.lbl_settings.config(
+            text={"ask": "It will ask you each time somebody in the group has "
+                         "already had a message.",
+                  "all": "SEND now goes to EVERYONE in the group, every time.",
+                  "new": "SEND now goes only to people who have never had a "
+                         "message from that group."}[val], fg=GOOD)
+        self.log("When some already had a message: "
+                 + picked.lower() + ".", "good")
+        self.root.after(6000, self._settings_hint)
 
     def _settings_hint(self):
         self.lbl_settings.config(
@@ -1264,17 +1302,23 @@ class App:
 
         # ---- email setup
         if want_em:
+            ms = self.cfg.get("email_auth") == "microsoft"
             if not (self.cfg.get("email_address") or "").strip():
                 issues.append("Email is ticked but your email address is not "
                               "filled in. Press \"Email settings…\".")
-            elif not (self.cfg.get("email_password") or ""):
+            elif ms and not self.cfg.get("email_oauth_refresh_token"):
+                issues.append("Email is ticked but you are not signed in to "
+                              "Microsoft yet. Press \"Email settings…\" and "
+                              "then \"Sign in with Microsoft\".")
+            elif not ms and not (self.cfg.get("email_password") or ""):
                 issues.append("Email is ticked but the password is not filled "
-                              "in. Press \"Email settings…\". Gmail, Outlook, "
-                              "Yahoo and iCloud need an App Password, not your "
-                              "normal one.")
+                              "in. Press \"Email settings…\". Gmail, Yahoo and "
+                              "iCloud need an App Password, not your normal "
+                              "one.")
             else:
                 fine.append(f"Emails will come from "
-                            f"{self.cfg['email_address']}.")
+                            f"{self.cfg['email_address']}"
+                            + ("  (signed in with Microsoft)." if ms else "."))
             if not self.e_subject.get().strip():
                 issues.append("Emails need a subject line. Type one in the "
                               "Subject box.")
@@ -1775,8 +1819,16 @@ class App:
                      "warn")
 
     def _email_configured(self):
-        return bool((self.cfg.get("email_address") or "").strip()
-                    and (self.cfg.get("email_password") or ""))
+        """Signed in one way or the other.
+
+        Microsoft accounts have no password at all — they sign in instead —
+        so demanding one locked them out of sending entirely.
+        """
+        if not (self.cfg.get("email_address") or "").strip():
+            return False
+        if self.cfg.get("email_auth") == "microsoft":
+            return bool(self.cfg.get("email_oauth_refresh_token"))
+        return bool(self.cfg.get("email_password"))
 
     def _on_mode_change(self):
         self._refresh_mode()
@@ -2408,36 +2460,25 @@ class App:
         tg_q = len(plan["queue"]) if plan else 0
         em_q = len(ep["queue"]) if ep else 0
 
+        already = ((plan["already_done"] if plan else 0)
+                   + (ep["already_done"] if ep else 0))
+
+        # Somebody in this group has had a message before. Ask what he means
+        # by SEND rather than quietly picking for him: "2 people, sent 1 of 1"
+        # looks like a lost person however carefully it is explained.
+        if already:
+            choice = self.cfg.get("when_already_sent", "ask")
+            if choice == "ask":
+                choice = self._ask_who_gets_it(already, tg_q + em_q)
+            if choice is None:
+                self._reset_buttons()
+                return
+            if choice == "all":
+                self._resend_everyone(variants)
+                return
+
         if tg_q + em_q == 0:
-            already = ((plan["already_done"] if plan else 0)
-                       + (ep["already_done"] if ep else 0))
             if already:
-                if messagebox.askyesno(
-                        "They have already had a message",
-                        f"Everyone in \"{self.current}\" has already received a "
-                        f"message from this group.\n\nThat is why nothing is "
-                        f"queued — it stops people being messaged twice by "
-                        f"mistake.\n\nSend this NEW message to all "
-                        f"{already} of them now?"):
-                    self.state = S.reset_project_state(self.state,
-                                                       self.current)
-                    self.log(f"\"{self.current}\" reset — sending the new "
-                             f"message to everyone.", "good")
-                    self.email_plan = (
-                        M.build_email_plan(em_people, self.state,
-                                           self.current, self.cfg)
-                        if self.v_email.get() and em_people else None)
-                    if self.v_tg.get() and tg_people:
-                        self.backend.submit(
-                            self.backend.sender.build_plan(
-                                tg_people, self.state, self.current),
-                            lambda p: self._confirm_and_start(variants, p),
-                            lambda e: (self._reset_buttons(),
-                                       self.log(f"Could not prepare: {e}",
-                                                "bad")))
-                    else:
-                        self._confirm_and_start(variants, None)
-                    return
                 self._reset_buttons()
                 return
             self._reset_buttons()
@@ -2492,6 +2533,97 @@ class App:
             self._reset_buttons()
             return
         self._start(variants)
+
+    def _ask_who_gets_it(self, already, new_count):
+        """-> "all" | "new" | None (cancelled)."""
+        total = already + new_count
+        win = tk.Toplevel(self.root)
+        win.title("Who should get this?")
+        win.configure(bg=PANEL)
+        win.geometry("560x340")
+        win.transient(self.root)
+        win.grab_set()
+
+        tk.Label(win, text="Who should get this message?", bg=PANEL, fg=TEXT,
+                 font=F(14, True)).pack(anchor="w", padx=24, pady=(20, 6))
+
+        if new_count:
+            body = (f"\"{self.current}\" has {total} people.\n\n"
+                    f"{already} of them have already had a message from this "
+                    f"group before. {new_count} "
+                    f"{'has' if new_count == 1 else 'have'} not.")
+        else:
+            body = (f"All {total} people in \"{self.current}\" have already "
+                    f"had a message from this group before.")
+        tk.Label(win, text=body, bg=PANEL, fg=MUTED, font=F(11),
+                 wraplength=500, justify="left").pack(anchor="w", padx=24)
+
+        answer = {"v": None}
+        remember = tk.BooleanVar(value=False)
+
+        def pick(v):
+            answer["v"] = v
+            if remember.get():
+                self.cfg["when_already_sent"] = v
+                try:
+                    S.save_config(self.cfg)
+                except S.SaveError:
+                    pass
+                self.log(f"From now on, SEND goes to "
+                         + ("everyone." if v == "all"
+                            else "new people only."), "info")
+            win.destroy()
+
+        box = tk.Frame(win, bg=PANEL)
+        box.pack(fill="x", padx=24, pady=16)
+
+        tk.Button(box, text=f"Send to all {total} people", bg=GREEN,
+                  fg="white", font=F(12, True), relief="flat", bd=0,
+                  cursor="hand2", padx=18, pady=9,
+                  activebackground=GREEN_DARK, activeforeground="white",
+                  command=lambda: pick("all")).pack(fill="x")
+        tk.Label(box, text="Everybody gets it, including the ones who had the "
+                           "last message.", bg=PANEL, fg=MUTED,
+                 font=F(9)).pack(anchor="w", pady=(3, 12))
+
+        if new_count:
+            tk.Button(box, text=f"Only the {new_count} who have not had one",
+                      bg=PANEL, fg=ACCENT, font=F(11), relief="flat", bd=0,
+                      cursor="hand2", padx=18, pady=7,
+                      highlightbackground=LINE, highlightthickness=1,
+                      command=lambda: pick("new")).pack(fill="x")
+            tk.Label(box, text="Nobody is sent to twice.", bg=PANEL, fg=MUTED,
+                     font=F(9)).pack(anchor="w", pady=(3, 0))
+
+        foot = tk.Frame(win, bg=PANEL)
+        foot.pack(fill="x", padx=24, side="bottom", pady=14)
+        tk.Checkbutton(foot, text="Always do this, stop asking me",
+                       variable=remember, bg=PANEL, font=F(9),
+                       selectcolor=PANEL,
+                       activebackground=PANEL).pack(side="left")
+        flat_btn(foot, "Cancel", win.destroy, pad=8).pack(side="right")
+
+        self.root.wait_window(win)
+        return answer["v"]
+
+    def _resend_everyone(self, variants):
+        """Clear this group's record so the message goes to all of them."""
+        tg_people, em_people = S.split_channels(self.members)
+        self.state = S.reset_project_state(self.state, self.current)
+        self.log(f"Sending to everyone in \"{self.current}\", including the "
+                 f"people who had the last message.", "good")
+        self.email_plan = (
+            M.build_email_plan(em_people, self.state, self.current, self.cfg)
+            if self.v_email.get() and em_people else None)
+        if self.v_tg.get() and tg_people and self.tg_ready:
+            self.backend.submit(
+                self.backend.sender.build_plan(tg_people, self.state,
+                                               self.current),
+                lambda p: self._confirm_and_start(variants, p),
+                lambda e: (self._reset_buttons(),
+                           self.log(f"Could not prepare: {e}", "bad")))
+        else:
+            self._confirm_and_start(variants, None)
 
     def _show_email_plan(self, plan, variants):
         q = len(plan["queue"])

@@ -171,6 +171,13 @@ DEFAULT_CONFIG = {
     # "password" or "microsoft". Microsoft blocked password sending for
     # personal Outlook/Hotmail/Live accounts, so those sign in instead and we
     # keep a refresh token rather than a password.
+    # What SEND means when some of the group already had a message.
+    # "all"  - everyone gets it, every time. What people expect SEND to mean.
+    # "new"  - skip anyone who already had one from this group.
+    # "ask"  - ask each time.
+    # Default is "all": "2 people in the group, sent 1 of 1" reads as a lost
+    # person, and explaining it afterwards was not enough.
+    "when_already_sent": "all",
     "email_auth": "password",
     "email_oauth_refresh_token": "",
     "email_oauth_client_id": "",

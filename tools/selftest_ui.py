@@ -273,18 +273,31 @@ def main():
           str(app.b_send["state"]) == "normal" and app.legs_left == 0)
     check("it is no longer marked as running", not app.running)
 
-    section("7. Nobody is messaged twice")
+    section("7. Everyone has already had it")
     FakeEmail.calls.clear()
     app.backend.sender.ran.clear()
-    ANSWERS["They have already had a message"] = False
+    was_mode = app.cfg.get("when_already_sent")
+
+    # asked, and he says only-the-new-ones: nothing goes out
+    app.cfg["when_already_sent"] = "new"
     app._on_send()
     pump(app, 60)
-    check("nothing was sent again",
+    check("choosing only-new sends nothing when all have had it",
           not FakeEmail.calls and not app.backend.sender.ran,
           f"{FakeEmail.calls} {app.backend.sender.ran}")
-    check("and it offered to resend instead",
-          any(t == "They have already had a message" for _, t, _ in SEEN))
-    ANSWERS.pop("They have already had a message")
+
+    # and the default: everybody gets it again
+    app.cfg["when_already_sent"] = "all"
+    FakeEmail.calls.clear()
+    app.backend.sender.ran.clear()
+    app._on_send()
+    pump(app, 80)
+    check("sending to everyone reaches the email people again",
+          any(c[0] == "run" for c in FakeEmail.calls), str(FakeEmail.calls))
+    check("and the Telegram people again too",
+          any(c[0] == "telegram" for c in app.backend.sender.ran),
+          str(app.backend.sender.ran))
+    app.cfg["when_already_sent"] = was_mode
 
     section("7b. It says WHY somebody was skipped")
     # Tommy's exact report: 2 people in the group, "Sent 1 of 1", and no
@@ -316,6 +329,128 @@ def main():
     app.current = was
     app.projects = S.load_projects()
     app._load_current_project()
+
+    section("7c. SEND goes to everyone when he wants it to")
+    # Tommy's ask: "when I hit send, send to all of them".
+    S.set_project(app.projects, "Resend case", "Hi {name}",
+                  "a1@x.com, A\nb2@x.com, B\nc3@x.com, C\n")
+    app.current = "Resend case"
+    app.projects = S.load_projects()
+    app._load_current_project()
+    app.v_tg.set(False); app.v_email.set(True)
+    app.e_subject.delete(0, "end"); app.e_subject.insert(0, "S")
+    app.t_msg.delete("1.0", "end"); app.t_msg.insert("1.0", "Hi {name}")
+    app._save_current_project()
+
+    def mark_sent(*addrs):
+        st = S.load_state()
+        ps = S.project_state(st, "Resend case")
+        ps["sent"].clear()
+        for a_ in addrs:
+            ps["sent"][a_] = "before"
+        S.save_state(st)
+        app.state = st
+
+    # --- mode: always everyone
+    app.cfg["when_already_sent"] = "all"
+    mark_sent("a1@x.com", "b2@x.com")
+    FakeEmail.calls.clear()
+    app._on_send(); pump(app, 60)
+    got = FakeEmail.calls[0][1] if FakeEmail.calls else []
+    check("\"always everyone\" sends to all 3",
+          sorted(got) == ["a1@x.com", "b2@x.com", "c3@x.com"], str(got))
+    check("and it never asked",
+          not any(t == "Who should get this?" for _, t, _ in SEEN))
+
+    # --- mode: only new
+    app.cfg["when_already_sent"] = "new"
+    mark_sent("a1@x.com", "b2@x.com")
+    FakeEmail.calls.clear()
+    app._on_send(); pump(app, 60)
+    got = FakeEmail.calls[0][1] if FakeEmail.calls else []
+    check("\"only new\" sends to just the 1", got == ["c3@x.com"], str(got))
+
+    # --- mode: ask, and he picks everyone
+    app.cfg["when_already_sent"] = "ask"
+    app._ask_who_gets_it = lambda already, new: "all"
+    mark_sent("a1@x.com", "b2@x.com")
+    FakeEmail.calls.clear()
+    app._on_send(); pump(app, 60)
+    got = FakeEmail.calls[0][1] if FakeEmail.calls else []
+    check("asked, he picked everyone -> all 3",
+          sorted(got) == ["a1@x.com", "b2@x.com", "c3@x.com"], str(got))
+
+    # --- mode: ask, and he picks only-new
+    app._ask_who_gets_it = lambda already, new: "new"
+    mark_sent("a1@x.com", "b2@x.com")
+    FakeEmail.calls.clear()
+    app._on_send(); pump(app, 60)
+    got = FakeEmail.calls[0][1] if FakeEmail.calls else []
+    check("asked, he picked only-new -> just the 1", got == ["c3@x.com"],
+          str(got))
+
+    # --- ask, cancelled -> nothing at all
+    app._ask_who_gets_it = lambda already, new: None
+    mark_sent("a1@x.com", "b2@x.com")
+    FakeEmail.calls.clear()
+    app._on_send(); pump(app, 40)
+    check("cancelled -> nothing sent", not FakeEmail.calls,
+          str(FakeEmail.calls))
+    check("and the buttons come back",
+          str(app.b_send["state"]) == "normal")
+
+    # --- everyone already had it, he picks everyone
+    app._ask_who_gets_it = lambda already, new: "all"
+    mark_sent("a1@x.com", "b2@x.com", "c3@x.com")
+    FakeEmail.calls.clear()
+    app._on_send(); pump(app, 60)
+    got = FakeEmail.calls[0][1] if FakeEmail.calls else []
+    check("all 3 already had it, resend -> all 3 again",
+          sorted(got) == ["a1@x.com", "b2@x.com", "c3@x.com"], str(got))
+
+    # --- nobody has had it: must NOT ask at all
+    asked = []
+    app._ask_who_gets_it = lambda already, new: asked.append(1) or "all"
+    mark_sent()
+    FakeEmail.calls.clear()
+    app._on_send(); pump(app, 60)
+    check("a fresh group never asks", not asked)
+    got = FakeEmail.calls[0][1] if FakeEmail.calls else []
+    check("and just sends to all 3",
+          sorted(got) == ["a1@x.com", "b2@x.com", "c3@x.com"], str(got))
+
+    del app._ask_who_gets_it
+    app.cfg["when_already_sent"] = "ask"
+    app.current = "My first list"
+    app.projects = S.load_projects()
+    app._load_current_project()
+
+    section("7d. Signed in with Microsoft counts as set up")
+    # Microsoft accounts have no password at all. Demanding one locked them
+    # out of sending completely.
+    keep = {k: app.cfg.get(k) for k in
+            ("email_auth", "email_password", "email_oauth_refresh_token",
+             "email_address")}
+    app.cfg.update(email_auth="microsoft", email_password="",
+                   email_oauth_refresh_token="a-token",
+                   email_address="tommy@live.com")
+    check("a Microsoft sign-in counts as configured", app._email_configured())
+
+    app.cfg["email_oauth_refresh_token"] = ""
+    check("but not signed in does not", not app._email_configured())
+
+    issues = []
+    real = app._show_diagnosis
+    app._show_diagnosis = lambda i, f: issues.extend(i)
+    app.v_email.set(True)
+    app._on_diagnose()
+    app._show_diagnosis = real
+    check("and it says to sign in, not to type a password",
+          any("Sign in with Microsoft" in i for i in issues), str(issues))
+    check("it never tells a Microsoft user to make an App Password",
+          not any("App Password" in i for i in issues), str(issues))
+
+    app.cfg.update(**keep)
 
     section("8. One message everyone sees")
     FakeEmail.calls.clear()
